@@ -1,6 +1,3 @@
-import json
-import warnings
-
 from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
@@ -28,6 +25,23 @@ class DBDataset(Dataset):
         port: Optional[str] = None,
         database: Optional[str] = None,
     ):
+        """
+        Initialize a DBDataset instance.
+
+        Args:
+            cache_dir (str, optional): The directory to cache the dataset. Defaults to None.
+            remote_url (str, optional):
+                The URL for connecting to the remote database in SQLAlchemy format.
+                For more information, see https://docs.sqlalchemy.org/en/20/core/engines.html#database-urls.
+                If not defined, all following parameters have to be specified. Defaults to None.
+            dialect (str, optional): The dialect for the database connection. Defaults to None.
+            driver (str, optional): The driver for the database connection. Defaults to None.
+            user (str, optional): The username for the database connection. Defaults to None.
+            password (str, optional): The password for the database connection. Defaults to None.
+            host (str, optional): The host address of the remote database. Defaults to None.
+            port (str, optional): The port number for the database connection. Defaults to None.
+            database (str, optional): The name of the database. Defaults to None.
+        """
         if remote_url is not None:
             self.remote_url = remote_url
         else:
@@ -49,7 +63,7 @@ class DBDataset(Dataset):
     ) -> str:
         """
         Returns the URL for connecting to the remote database in format used by SQLAlchemy.
-        For more information, see https://docs.sqlalchemy.org/en/20/core/engines.html#database-urls
+        For more information, see https://docs.sqlalchemy.org/en/20/core/engines.html#database-urls.
 
         Args:
             dialect (str): The dialect for the database connection.
@@ -67,13 +81,13 @@ class DBDataset(Dataset):
 
     @classmethod
     def create_remote_connection(cls, remote_url: str) -> Connection:
-        """Create a new SQLAlchemy Connection instance to the remote database.
+        """
+        Create a new SQLAlchemy Connection instance to the remote database.
         Don't forget to close the Connection after you are done using it!
 
         Args:
             remote_url (str): The URL for connecting to the remote database.
                 Format is dialect+driver://username:password@host:port/database
-                For more information, see https://docs.sqlalchemy.org/en/20/core/engines.html#database-urls
 
         Returns:
             Connection: The SQLAlchemy Connection instance to the remote database.
@@ -81,6 +95,12 @@ class DBDataset(Dataset):
         return Connection(create_engine(remote_url))
 
     def make_db(self) -> Database:
+        """
+        Create a Database instance from the remote database.
+
+        Returns:
+            Database: The Database instance.
+        """
         remote_con = self.create_remote_connection(self.remote_url)
 
         inspector = DBInspector(remote_con)
@@ -119,8 +139,7 @@ class DBDataset(Dataset):
 
             pk_dict[t_name] = list(inspector.get_primary_key(t_name))
             fk_dict[t_name] = [
-                (fk_const.ref_table, list(fk))
-                for fk, fk_const in inspector.get_foreign_keys(t_name).items()
+                (fk.ref_table, fk.src_columns) for fk in inspector.get_foreign_keys(t_name)
             ]
 
         # Close the connection as we have all the data we need
