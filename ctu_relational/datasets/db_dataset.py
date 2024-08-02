@@ -1,11 +1,10 @@
 from typing import Dict, List, Optional, Tuple
 
+from tqdm.std import tqdm
+
 import pandas as pd
 
-from sqlalchemy import types
-from sqlalchemy.engine import Connection, create_engine
-from sqlalchemy.schema import MetaData, Table as SQLTable
-from sqlalchemy.sql import select
+from sqlalchemy import types, Connection, create_engine, MetaData, Table as SQLTable, select
 
 from relbench.base import Dataset, Database, Table
 
@@ -137,7 +136,7 @@ class DBDataset(Dataset):
         pk_dict: Dict[str, List[str]] = {}
         fk_dict: Dict[str, List[Tuple[str, List[str]]]] = {}
 
-        for t_name in table_names:
+        for t_name in tqdm(table_names, desc="Downloading tables"):
 
             sql_table = SQLTable(t_name, remote_md)
 
