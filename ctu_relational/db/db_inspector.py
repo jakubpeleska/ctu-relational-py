@@ -1,7 +1,6 @@
 from typing import Dict, List, Set, Tuple
 
-import sqlalchemy
-from sqlalchemy.engine import Connection, Engine
+from sqlalchemy import Connection, Engine, Inspector, inspect
 from sqlalchemy.types import TypeEngine
 
 from .schema import ForeignKeyDef
@@ -26,7 +25,7 @@ class DBInspector:
             connection (Connection): The database connection - instance of SQLAlchemy's `Connection` class.
         """
         self._connection = connection
-        self._inspect = sqlalchemy.inspect(self._connection.engine)
+        self._inspect = inspect(self._connection.engine)
 
     @property
     def connection(self) -> Connection:
