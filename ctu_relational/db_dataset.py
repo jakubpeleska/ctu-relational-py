@@ -11,8 +11,17 @@ from relbench.base import Dataset, Database, Table
 
 from ctu_relational.db import DBInspector
 
+__ALL__ = ["DBDataset"]
+
 
 class DBDataset(Dataset):
+    """
+    A dataset that is created from a remote relational database.
+
+    Attributes:
+        remote_url (str): The URL for connecting to the remote database.
+    """
+
     def __init__(
         self,
         cache_dir: Optional[str] = None,
@@ -24,9 +33,11 @@ class DBDataset(Dataset):
         host: Optional[str] = None,
         port: Optional[str] = None,
         database: Optional[str] = None,
+        time_col_dict: Optional[Dict[str, str]] = None,
+        val_timestamp: Optional[pd.Timestamp] = None,
+        test_timestamp: Optional[pd.Timestamp] = None,
     ):
-        """
-        Initialize a DBDataset instance.
+        """Create a database dataset object.
 
         Args:
             cache_dir (str, optional): The directory to cache the dataset. Defaults to None.
@@ -41,14 +52,26 @@ class DBDataset(Dataset):
             host (str, optional): The host address of the remote database. Defaults to None.
             port (str, optional): The port number for the database connection. Defaults to None.
             database (str, optional): The name of the database. Defaults to None.
+            time_col_dict (Dict[str, str], optional): A dictionary mapping table names to time columns. Defaults to None.
+            val_timestamp (pd.Timestamp, optional): The timestamp for the validation split. Defaults to None.
+            test_timestamp (pd.Timestamp, optional): The timestamp for the test split. Defaults to None.
         """
-        if remote_url is not None:
-            self.remote_url = remote_url
-        else:
-            self.remote_url = self.get_url(
-                dialect, driver, user, password, host, port, database
-            )
+
+        self.remote_url = (
+            remote_url
+            if remote_url is not None
+            else self.get_url(dialect, driver, user, password, host, port, database)
+        )
+
+        self.time_col_dict = time_col_dict if time_col_dict is not None else {}
+
+        self.val_timestamp = val_timestamp
+        self.test_timestamp = test_timestamp
+
         super().__init__(cache_dir)
+
+    def __repr__(self) -> str:
+        return f"{self.__class__.__name__}(remote_url={self.remote_url})"
 
     @classmethod
     def get_url(
@@ -121,7 +144,10 @@ class DBDataset(Dataset):
             dtypes: Dict[str, str] = {}
 
             for c in sql_table.columns:
-                dtype = SQL_TO_PANDAS.get(type(c.type.as_generic()), None)
+                sql_type = type(c.type.as_generic())
+                if sql_type in DATE_TYPES and t_name not in self.time_col_dict:
+                    self.time_col_dict[t_name] = c.name
+                dtype = SQL_TO_PANDAS.get(sql_type, None)
                 if dtype is not None:
                     dtypes[c.name] = dtype
                 else:
@@ -171,10 +197,13 @@ class DBDataset(Dataset):
                 df=df_dict[t_name],
                 fkey_col_to_pkey_table=fkey_col_to_pkey_table,
                 pkey_col="__PK__",
+                time_col=self.time_col_dict.get(t_name, None),
             )
 
         return Database(table_dict)
 
+
+DATE_TYPES = (types.Date, types.DateTime)
 
 SQL_TO_PANDAS = {
     types.BigInteger: pd.Int64Dtype(),
