@@ -8,7 +8,7 @@ from sqlalchemy import types, Connection, create_engine, MetaData, Table as SQLT
 
 from relbench.base import Dataset, Database, Table
 
-from ctu_relational.db import DBInspector
+from ctu_relational.db import DBInspector, ForeignKeyDef
 
 __ALL__ = ["DBDataset"]
 
@@ -133,8 +133,7 @@ class DBDataset(Dataset):
         table_names = inspector.get_tables()
 
         df_dict: Dict[str, pd.DataFrame] = {}
-        pk_dict: Dict[str, List[str]] = {}
-        fk_dict: Dict[str, List[Tuple[str, List[str]]]] = {}
+        fk_dict: Dict[str, List[ForeignKeyDef]] = {}
 
         for t_name in tqdm(table_names, desc="Downloading tables"):
 
@@ -143,7 +142,10 @@ class DBDataset(Dataset):
             dtypes: Dict[str, str] = {}
 
             for c in sql_table.columns:
-                sql_type = type(c.type.as_generic())
+                try:
+                    sql_type = type(c.type.as_generic())
+                except NotImplementedError:
+                    sql_type = None
                 if sql_type in DATE_TYPES and t_name not in self.time_col_dict:
                     self.time_col_dict[t_name] = c.name
                 dtype = SQL_TO_PANDAS.get(sql_type, None)
@@ -162,10 +164,7 @@ class DBDataset(Dataset):
 
             df_dict[t_name] = df
 
-            pk_dict[t_name] = list(inspector.get_primary_key(t_name))
-            fk_dict[t_name] = [
-                (fk.ref_table, fk.src_columns) for fk in inspector.get_foreign_keys(t_name)
-            ]
+            fk_dict[t_name] = inspector.get_foreign_keys(t_name)
 
         # Close the connection as we have all the data we need
         remote_con.close()
@@ -177,20 +176,21 @@ class DBDataset(Dataset):
         for t_name in table_names:
             fkey_col_to_pkey_table: Dict[str, str] = {}
 
-            for ref_table, fk_cols in fk_dict[t_name]:
-                fk_name = f"FK_{ref_table}_" + "_".join(fk_cols)
-                fkey_col_to_pkey_table[fk_name] = ref_table
+            for fk in fk_dict[t_name]:
+                fk_name = f"FK_{fk.ref_table}_" + "_".join(fk.src_columns)
+                fkey_col_to_pkey_table[fk_name] = fk.ref_table
 
-                df_pk = df_dict[t_name][fk_cols]
-                df_fk = df_dict[ref_table].set_index(pk_dict[ref_table])
+                df_src = df_dict[t_name][fk.src_columns]
+                df_ref = df_dict[fk.ref_table]
 
-                df_dict[t_name][fk_name] = pd.merge(
-                    df_pk,
-                    df_fk,
-                    how="left",
-                    left_on=fk_cols,
-                    right_index=True,
-                )["__PK__"]
+                out = pd.merge(
+                    left=df_src,
+                    right=df_ref,
+                    how="inner",
+                    left_on=fk.src_columns,
+                    right_on=fk.ref_columns,
+                )
+                df_dict[t_name][fk_name] = out["__PK__"]
 
             table_dict[t_name] = Table(
                 df=df_dict[t_name],
