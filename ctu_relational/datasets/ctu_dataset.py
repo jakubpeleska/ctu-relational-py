@@ -14,7 +14,7 @@ CTUDatabaseName = Literal[
     'GOSales', 'Grants', 'Hepatitis_std', 'Hockey', 'imdb_ijs', 'KRK', 'lahman_2014',
     'legalActs', 'Mesh', 'medical', 'Mondial', 'Mooney_Family', 'imdb_MovieLens',
     'MuskSmall', 'mutagenesis', 'nations', 'NBA', 'NCAA', 'northwind', 'Pima',
-    'PremierLeague', 'PTC', 'PTE', 'PubMed_Diabetes', 'pubs', 'Pyrimidine', 'restbase',
+    'PremierLeague', 'PTE', 'PubMed_Diabetes', 'pubs', 'Pyrimidine', 'restbase',
     'sakila', 'SalesDB', 'Same_gen', 'SAP', 'SAT', 'Seznam', 'SFScores', 'Shakespeare',
     'stats', 'Student_loan', 'Toxicology', 'tpcc', 'tpcd', 'tpcds', 'tpch', 'trains',
     'Triazine', 'university', 'UTube', 'UW_std', 'VisualGenome', 'voc', 'Walmart','WebKP',
