@@ -1,6 +1,6 @@
 from typing import Dict, List, Set, Tuple
 
-from sqlalchemy import Connection, Engine, Inspector, inspect
+from sqlalchemy import Connection, Engine, inspect
 from sqlalchemy.types import TypeEngine
 
 from .schema import ForeignKeyDef
