@@ -4,7 +4,7 @@ build-backend = "flit_core.buildapi"
 
 [project]
 name = "ctu_relational"
-version = "0.1.0"
+version = "0.1.1"
 description = "CTU Relational: SQL Database Datasets for Machine Learning"
 authors = [{name = "Jakub Peleška", email = "jakub.peleska@fel.cvut.cz"}]
 readme = "README.md"
