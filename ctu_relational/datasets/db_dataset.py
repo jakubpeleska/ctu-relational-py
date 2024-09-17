@@ -1,17 +1,9 @@
 from typing import Dict, List, Optional
 
-from tqdm.std import tqdm
-
 import pandas as pd
+import sqlalchemy as sa
 
-from sqlalchemy import (
-    types as sqltypes,
-    Connection,
-    create_engine,
-    MetaData,
-    Table as SQLTable,
-    select,
-)
+from tqdm.std import tqdm
 
 from relbench.base import Dataset, Database, Table
 
@@ -107,7 +99,7 @@ class DBDataset(Dataset):
         return f"{dialect}+{driver}://{user}:{password}@{host}:{port}/{database}"
 
     @classmethod
-    def create_remote_connection(cls, remote_url: str) -> Connection:
+    def create_remote_connection(cls, remote_url: str) -> sa.Connection:
         """
         Create a new SQLAlchemy Connection instance to the remote database.
         Don't forget to close the Connection after you are done using it!
@@ -119,9 +111,9 @@ class DBDataset(Dataset):
         Returns:
             Connection: The SQLAlchemy Connection instance to the remote database.
         """
-        return Connection(create_engine(remote_url))
+        return sa.Connection(sa.create_engine(remote_url))
 
-    def get_scheme(self) -> Dict[str, Dict[str, sqltypes.TypeEngine]]:
+    def get_scheme(self) -> Dict[str, Dict[str, sa.types.TypeEngine]]:
         """Get the type scheme of the remote database.
 
         Returns:
@@ -131,7 +123,7 @@ class DBDataset(Dataset):
 
         inspector = DBInspector(remote_con)
 
-        remote_md = MetaData()
+        remote_md = sa.MetaData()
         remote_md.reflect(bind=inspector.engine)
 
         table_names = inspector.get_tables()
@@ -140,7 +132,7 @@ class DBDataset(Dataset):
 
         for t_name in table_names:
 
-            sql_table = SQLTable(t_name, remote_md)
+            sql_table = sa.Table(t_name, remote_md)
 
             table_sql__types[t_name] = {}
 
@@ -167,7 +159,7 @@ class DBDataset(Dataset):
 
         inspector = DBInspector(remote_con)
 
-        remote_md = MetaData()
+        remote_md = sa.MetaData()
         remote_md.reflect(bind=inspector.engine)
 
         table_names = inspector.get_tables()
@@ -177,10 +169,10 @@ class DBDataset(Dataset):
 
         for t_name in tqdm(table_names, desc="Downloading tables"):
 
-            sql_table = SQLTable(t_name, remote_md)
+            sql_table = sa.Table(t_name, remote_md)
 
             dtypes: Dict[str, str] = {}
-            sql_types_dict: Dict[str, sqltypes.TypeEngine] = {}
+            sql_types_dict: Dict[str, sa.types.TypeEngine] = {}
 
             for c in sql_table.columns:
                 try:
@@ -195,7 +187,7 @@ class DBDataset(Dataset):
                 else:
                     print(f"Unknown data type {c.type}")
 
-            statement = select(sql_table.columns)
+            statement = sa.select(sql_table.columns)
             query = statement.compile(remote_con.engine)
             df = pd.read_sql_query(str(query), con=remote_con, dtype=dtypes)
 
@@ -238,21 +230,10 @@ class DBDataset(Dataset):
             )
 
         # Remove original primary and foreign keys
-
-        for t_name in table_names:
-            sql_table = SQLTable(t_name, remote_md)
-            table = table_dict[t_name]
-
-            print(t_name)
-            print("PK:", [c.name for c in sql_table.primary_key.columns])
-            print(
-                "FKs:",
-                {
-                    fk.referred_table.name: [c.name for c in fk.columns]
-                    for fk in sql_table.foreign_key_constraints
-                },
-            )
-            if not self.keep_original_keys:
+        if not self.keep_original_keys:
+            for t_name in table_names:
+                sql_table = sa.Table(t_name, remote_md)
+                table = table_dict[t_name]
                 table.df.drop(
                     # Drop primary key columns
                     columns={c.name for c in sql_table.primary_key.columns}.union(
@@ -289,36 +270,29 @@ class DBDataset(Dataset):
             left_on=src_columns,
             right_on=ref_columns,
         )["__PK__"]
-        # fk_col = pd.merge(
-        #     left=df_src,
-        #     right=df_ref,
-        #     how="inner",
-        #     left_on=src_columns,
-        #     right_on=ref_columns,
-        # )["__PK__"]
 
         return fk_col, fk_name
 
 
-DATE_TYPES = (sqltypes.Date, sqltypes.DateTime)
+DATE_TYPES = (sa.types.Date, sa.types.DateTime)
 
 SQL_TO_PANDAS = {
-    sqltypes.BigInteger: pd.Int64Dtype(),
-    sqltypes.Boolean: pd.BooleanDtype(),
-    sqltypes.Date: "object",
-    sqltypes.DateTime: "object",
-    sqltypes.Double: pd.Float64Dtype(),
-    sqltypes.Enum: pd.CategoricalDtype(),
-    sqltypes.Float: pd.Float64Dtype(),
-    sqltypes.Integer: pd.Int32Dtype(),
-    sqltypes.Interval: "object",
-    sqltypes.LargeBinary: "object",
-    sqltypes.Numeric: pd.Float64Dtype(),
-    sqltypes.SmallInteger: pd.Int16Dtype(),
-    sqltypes.String: "string",
-    sqltypes.Text: "string",
-    sqltypes.Time: "object",
-    sqltypes.Unicode: "string",
-    sqltypes.UnicodeText: "string",
-    sqltypes.Uuid: "object",
+    sa.types.BigInteger: pd.Int64Dtype(),
+    sa.types.Boolean: pd.BooleanDtype(),
+    sa.types.Date: "object",
+    sa.types.DateTime: "object",
+    sa.types.Double: pd.Float64Dtype(),
+    sa.types.Enum: pd.CategoricalDtype(),
+    sa.types.Float: pd.Float64Dtype(),
+    sa.types.Integer: pd.Int32Dtype(),
+    sa.types.Interval: "object",
+    sa.types.LargeBinary: "object",
+    sa.types.Numeric: pd.Float64Dtype(),
+    sa.types.SmallInteger: pd.Int16Dtype(),
+    sa.types.String: "string",
+    sa.types.Text: "string",
+    sa.types.Time: "object",
+    sa.types.Unicode: "string",
+    sa.types.UnicodeText: "string",
+    sa.types.Uuid: "object",
 }
