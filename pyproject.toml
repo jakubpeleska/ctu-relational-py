@@ -1,2 +1,30 @@
+[build-system]
+requires = ["flit_core>=3.4"]
+build-backend = "flit_core.buildapi"
+
+[project]
+name = "ctu_relational"
+version = "0.1.0"
+description = "CTU Relational: SQL Database Datasets for Machine Learning"
+authors = [{name = "Jakub Peleška", email = "jakub.peleska@fel.cvut.cz"}]
+readme = "README.md"
+license = {file = "LICENSE"}
+classifiers = [
+	"License :: OSI Approved :: MIT License",
+]
+requires-python=">=3.8"
+keywords=[]
+dependencies=[
+	"relbench",
+  "pandas",
+  "sqlalchemy",
+  "mysql-connector-python",
+  "tqdm"
+]
+
+[project.urls]
+Homepage = "https://github.com/jakubpeleska/ctu-relational-py"
+Issues = "https://github.com/jakubpeleska/ctu-relational-py/issues"
+
 [tool.black]
 line-length = 92
