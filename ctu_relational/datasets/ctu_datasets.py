@@ -18,6 +18,7 @@ __ALL__ = [
     "LegalActs",
     "SAP",
     "Seznam",
+    "Stats",
     "TPCC",
     "TPCD",
     "TPCDS",
@@ -355,6 +356,31 @@ class Seznam(CTUDataset):
                 "dobito": "month_year_datum_transakce",
                 "probehnuto": "month_year_datum_transakce",
                 "probehnuto_mimo_penezenku": "Month/Year",
+            },
+            keep_original_keys=False,
+        )
+
+
+class Stats(CTUDataset):
+    """
+    An anonymized dump of all user-contributed content on the Stats Stack Exchange network.
+    """
+
+    val_timestamp = pd.Timestamp("2013-11-01")
+    test_timestamp = pd.Timestamp("2014-05-01")
+
+    def __init__(self, cache_dir: Optional[str] = None):
+        super().__init__(
+            "stats",
+            cache_dir=cache_dir,
+            time_col_dict={
+                "badges": "Date",
+                "comments": "CreationDate",
+                "postHistory": "CreationDate",
+                "postLinks": "CreationDate",
+                "posts": "LasActivityDate",
+                "users": "CreationDate",
+                "votes": "CreationDate",
             },
             keep_original_keys=False,
         )
