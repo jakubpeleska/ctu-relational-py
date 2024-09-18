@@ -12,6 +12,7 @@ __ALL__ = [
     "AdventureWorks",
     "Airline",
     "Credit",
+    "ErgastF1",
     "Expenditures",
     "Employee",
     "Financial",
@@ -168,6 +169,46 @@ class Credit(CTUDataset):
         db = super().make_db()
 
         db.table_dict["member"].df.drop(columns=["photograph"], inplace=True)
+
+        return db
+
+
+class ErgastF1(CTUDataset):
+    """
+    Ergast.com is a webservice that provides a database of Formula 1 races, \
+    starting from the 1950 season until today. The dataset includes information \
+    such as the time taken in each lap, the time taken for pit stops, the performance \
+    in the qualifying rounds etc. of all Formula 1 races from 1950 to 2017.
+    """
+
+    val_timestamp = pd.Timestamp("1997-01-01")
+    test_timestamp = pd.Timestamp("2009-01-01")
+
+    TIME_ORIGIN = pd.Timestamp("1970-01-01")
+
+    def __init__(self, cache_dir: Optional[str] = None):
+        super().__init__(
+            "ErgastF1",
+            cache_dir=cache_dir,
+            time_col_dict={"drivers": "dob", "races": "date"},
+            keep_original_keys=False,
+            keep_original_compound_keys=True,
+        )
+
+    def make_db(self) -> Database:
+        db = super().make_db()
+
+        # Convert time column to datetime
+        db.table_dict["pitStops"].df["time"] = (
+            self.TIME_ORIGIN + db.table_dict["pitStops"].df["time"]
+        )
+
+        # Merge date and time columns
+        db.table_dict["races"].df["time"] = (
+            db.table_dict["races"].df["time"].fillna(pd.Timedelta(hours=12))
+        )
+        db.table_dict["races"].df["date"] += db.table_dict["races"].df["time"]
+        db.table_dict["races"].df.drop(columns=["time"], inplace=True)
 
         return db
 
