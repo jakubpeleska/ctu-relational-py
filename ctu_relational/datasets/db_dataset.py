@@ -140,7 +140,7 @@ class DBDataset(Dataset):
                 try:
                     sql_type = type(c.type.as_generic())
                 except NotImplementedError:
-                    sql_type = None
+                    sql_type = type(c.type)
 
                 table_sql__types[t_name][c.name] = sql_type
 
