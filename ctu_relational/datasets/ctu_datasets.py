@@ -14,6 +14,7 @@ __ALL__ = [
     "Expenditures",
     "Employee",
     "Financial",
+    "Geneea",
     "FNHK",
     "LegalActs",
     "SAP",
@@ -247,6 +248,32 @@ class FNHK(CTUDataset):
         db.table_dict["pripady"].df.drop(columns=["Identifikace_pripadu"], inplace=True)
         db.table_dict["vykony"].df.drop(columns=["Identifikace_pripadu"], inplace=True)
         db.table_dict["zup"].df.drop(columns=["Identifikace_pripadu"], inplace=True)
+
+        return db
+
+
+class Geneea(CTUDataset):
+    """
+    Data on deputies and senators in the Czech Republic.
+    """
+
+    val_timestamp = pd.Timestamp("2015-03-01")
+    test_timestamp = pd.Timestamp("2015-08-01")
+
+    def __init__(self, cache_dir: Optional[str] = None):
+        super().__init__(
+            "geneea",
+            cache_dir=cache_dir,
+            time_col_dict={"hl_hlasovani": "datum"},
+            keep_original_keys=False,
+        )
+
+    def make_db(self) -> Database:
+        db = super().make_db()
+
+        # Combine date and time columns
+        db.table_dict["hl_hlasovani"].df["datum"] += db.table_dict["hl_hlasovani"].df["cas"]
+        db.table_dict["hl_hlasovani"].df.drop(columns=["cas"], inplace=True)
 
         return db
 
