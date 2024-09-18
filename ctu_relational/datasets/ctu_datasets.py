@@ -10,6 +10,7 @@ from .db_dataset import DBDataset
 __ALL__ = [
     "Accidents",
     "Airline",
+    "Credit",
     "Expenditures",
     "Employee",
     "FNHK",
@@ -99,6 +100,29 @@ class Airline(CTUDataset):
             time_col_dict={"On_Time_On_Time_Performance_2016_1": "FlightDate"},
             keep_original_keys=False,
         )
+
+
+class Credit(CTUDataset):
+    val_timestamp = pd.Timestamp("1999-09-01")
+    test_timestamp = pd.Timestamp("1999-09-23")
+
+    def __init__(self, cache_dir: Optional[str] = None):
+        super().__init__(
+            "Credit",
+            cache_dir=cache_dir,
+            time_col_dict={
+                "charge": "charge_dt",
+                "payment": "payment_dt",
+            },
+            keep_original_keys=False,
+        )
+
+    def make_db(self) -> Database:
+        db = super().make_db()
+
+        db.table_dict["member"].df.drop(columns=["photograph"], inplace=True)
+
+        return db
 
 
 class Expenditures(CTUDataset):
