@@ -9,6 +9,7 @@ from .db_dataset import DBDataset
 
 __ALL__ = [
     "Accidents",
+    "AdventureWorks",
     "Airline",
     "Credit",
     "Expenditures",
@@ -91,6 +92,47 @@ class Accidents(CTUDataset):
             cache_dir=cache_dir,
             time_col_dict={"nesreca": "cas_nesreca"},
             keep_original_keys=False,
+        )
+
+
+class AdventureWorks(CTUDataset):
+    """
+    Adventure Works 2014 (OLTP version) is a sample database for Microsoft SQL Server, \
+    which has replaced Northwind and Pub sample databases that were shipped earlier. \
+    The database is about a fictious, multinational bicycle manufacturer called \
+    Adventure Works Cycles.
+    """
+
+    val_timestamp = pd.Timestamp("2014-01-01")
+    test_timestamp = pd.Timestamp("2014-04-01")
+
+    def __init__(self, cache_dir: Optional[str] = None):
+        super().__init__(
+            "AdventureWorks2014",
+            cache_dir=cache_dir,
+            time_col_dict={
+                "Address": "ModifiedDate",
+                "BusinessEntityAddress": "ModifiedDate",
+                "CreditCard": "ModifiedDate",
+                "CurrencyRate": "ModifiedDate",
+                "EmailAddress": "ModifiedDate",
+                "Password": "ModifiedDate",
+                "Person": "ModifiedDate",
+                "PersonCreditCard": "ModifiedDate",
+                "PersonPhone": "ModifiedDate",
+                "PurchaseOrderDetail": "ModifiedDate",
+                "PurchaseOrderHeader": "ModifiedDate",
+                "SalesOrderDetail": "ModifiedDate",
+                "SalesOrderHeader": "ModifiedDate",
+                "SalesOrderHeaderSalesReason": "ModifiedDate",
+                "SpecialOfferProduct": "ModifiedDate",
+                "TransactionHistory": "ModifiedDate",
+                "TransactionHistoryArchive": "ModifiedDate",
+                "WorkOrder": "ModifiedDate",
+                "WorkOrderRouting": "ModifiedDate",
+            },
+            keep_original_keys=False,
+            keep_original_compound_keys=True,
         )
 
 

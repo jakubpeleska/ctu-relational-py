@@ -4,6 +4,7 @@ from .db_dataset import *
 from .ctu_datasets import *
 
 register_dataset("ctu-accidents", Accidents)
+register_dataset("ctu-adventureworks", AdventureWorks)
 register_dataset("ctu-airline", Airline)
 register_dataset("ctu-credit", Credit)
 register_dataset("ctu-expenditures", Expenditures)
