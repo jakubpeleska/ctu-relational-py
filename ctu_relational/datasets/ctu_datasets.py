@@ -3,7 +3,7 @@ from typing import Dict, Literal, Optional, Union
 
 import pandas as pd
 
-from relbench.base import Database
+from relbench.base import Database, Table
 
 from .db_dataset import DBDataset
 
@@ -13,6 +13,7 @@ __ALL__ = [
     "Expenditures",
     "Employee",
     "LegalActs",
+    "SAP",
     "Seznam",
     "TPCC",
     "TPCD",
@@ -191,6 +192,63 @@ class LegalActs(CTUDataset):
 
         # Remove scrape fix table
         db.table_dict.pop("scrapefix")
+
+        return db
+
+
+class SAP(CTUDataset):
+    """
+    Syntetic dataset containing information about sales of a Credit++.
+    """
+
+    val_timestamp = pd.Timestamp("2007-05-30")
+    test_timestamp = pd.Timestamp("2007-06-15")
+
+    def __init__(self, cache_dir: Optional[str] = None):
+        super().__init__(
+            "SAP",
+            cache_dir=cache_dir,
+            time_col_dict={"Sales": "EVENT_DATE"},
+            keep_original_keys=True,
+        )
+
+    def make_db(self) -> Database:
+        db = super().make_db()
+
+        mailings_1_2 = db.table_dict["Mailings1_2"].df
+        mailings_1_2.drop(columns=["KxIndex", "REFID"], inplace=True)
+        fk_name = [
+            k
+            for k, v in db.table_dict["Mailings1_2"].fkey_col_to_pkey_table.items()
+            if v == "Customers"
+        ][0]
+
+        mailings_3 = db.table_dict["mailings3"].df
+        fk_col, _ = self._reindex_fk(
+            {tn: t.df for tn, t in db.table_dict.items()},
+            "mailings3",
+            ["REFID"],
+            "Customers",
+            ["ID"],
+        )
+        mailings_3[fk_name] = fk_col
+        mailings_3.drop(columns=["REFID"], inplace=True)
+        mailings_3["__PK__"] += mailings_1_2["__PK__"].max() + 1
+
+        db.table_dict["Customers"].df.drop(columns=["ID", "GEOID"], inplace=True)
+        db.table_dict["Sales"].df.drop(columns=["EVENTID", "REFID"], inplace=True)
+        db.table_dict["Demog"].df.drop(columns=["GEOID"], inplace=True)
+
+        db.table_dict.pop("Mailings1_2")
+        db.table_dict.pop("mailings3")
+
+        mailings = pd.concat([mailings_1_2, mailings_3], axis=0)
+        db.table_dict["Mailings"] = Table(
+            df=mailings,
+            fkey_col_to_pkey_table={fk_name: "Customers"},
+            pkey_col="__PK__",
+            time_col=None,
+        )
 
         return db
 
