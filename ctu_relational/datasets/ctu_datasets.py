@@ -54,6 +54,7 @@ class CTUDataset(DBDataset):
         cache_dir: Optional[str] = None,
         time_col_dict: Optional[Dict[str, str]] = None,
         keep_original_keys: bool = False,
+        keep_original_compound_keys: bool = False,
     ):
         """Create a database dataset object.
 
@@ -76,6 +77,7 @@ class CTUDataset(DBDataset):
             database=database,
             time_col_dict=time_col_dict,
             keep_original_keys=keep_original_keys,
+            keep_original_compound_keys=keep_original_compound_keys,
         )
 
 

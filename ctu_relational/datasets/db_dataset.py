@@ -33,6 +33,7 @@ class DBDataset(Dataset):
         database: Optional[str] = None,
         time_col_dict: Optional[Dict[str, str]] = None,
         keep_original_keys: bool = False,
+        keep_original_compound_keys: bool = False,
     ):
         """Create a database dataset object.
 
@@ -52,6 +53,8 @@ class DBDataset(Dataset):
             keep_original_keys (bool, optional): Whether to keep original primary and foreign keys \
                 after duplication during re-indexing. This is useful when the keys contain information \
                 beyond just their relationship to other rows. Defaults to False.
+            keep_original_compound_keys (bool, optional): Whether to keep original compound primary \
+                and foreign keys as they often contain useful data. Defaults to False.
         """
 
         self.remote_url = (
@@ -63,6 +66,7 @@ class DBDataset(Dataset):
         self.time_col_dict = time_col_dict if time_col_dict is not None else {}
 
         self.keep_original_keys = keep_original_keys
+        self.keep_original_compound_keys = keep_original_compound_keys
 
         super().__init__(cache_dir)
 
@@ -185,7 +189,7 @@ class DBDataset(Dataset):
                     dtypes[c.name] = dtype
                     sql_types_dict[c.name] = sql_type
                 else:
-                    print(f"Unknown data type {c.type}")
+                    print(f"Unknown data type {c.type} in {t_name}.{c.name}")
 
             statement = sa.select(sql_table.columns)
             query = statement.compile(remote_con.engine)
@@ -196,8 +200,7 @@ class DBDataset(Dataset):
                     try:
                         df[col] = pd.to_datetime(df[col])
                     except pd.errors.OutOfBoundsDatetime:
-                        pass
-                        # print(f"Out of bounds datetime in {t_name}.{col}", file=sys.stderr)
+                        print(f"Out of bounds datetime in {t_name}.{col}")
 
             # Create index column used as artificial primary key
             df.index.name = "__PK__"
@@ -234,18 +237,21 @@ class DBDataset(Dataset):
             for t_name in table_names:
                 sql_table = sa.Table(t_name, remote_md)
                 table = table_dict[t_name]
-                table.df.drop(
-                    # Drop primary key columns
-                    columns={c.name for c in sql_table.primary_key.columns}.union(
+                drop_cols = set()
+
+                # Drop primary key columns
+                if (
+                    not self.keep_original_compound_keys
+                    or len(sql_table.primary_key.columns) == 1
+                ):
+                    drop_cols |= {c.name for c in sql_table.primary_key.columns}
+
+                for fk in sql_table.foreign_key_constraints:
+                    if not self.keep_original_compound_keys or len(fk.columns) == 1:
                         # Drop foreign key columns
-                        {
-                            c.name
-                            for fk in sql_table.foreign_key_constraints
-                            for c in fk.columns
-                        }
-                    ),
-                    inplace=True,
-                )
+                        drop_cols |= {c.name for c in fk.columns}
+
+                table.df.drop(columns=drop_cols, inplace=True)
 
         remote_con.close()
 
