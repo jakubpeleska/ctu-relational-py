@@ -12,6 +12,7 @@ __ALL__ = [
     "Airline",
     "Expenditures",
     "Employee",
+    "FNHK",
     "LegalActs",
     "SAP",
     "Seznam",
@@ -165,6 +166,38 @@ class Employee(CTUDataset):
         db.table_dict["dept_emp"].df["to_date"] = pd.to_datetime(
             db.table_dict["dept_emp"].df["to_date"], errors="coerce"
         )
+
+        return db
+
+
+class FNHK(CTUDataset):
+    """
+    Anonymised data from a hospital in Hradec Kralove, Czech Republic, \
+    about treatment and medication.
+    """
+
+    val_timestamp = pd.Timestamp("2015-01-01")
+    test_timestamp = pd.Timestamp("2016-01-01")
+
+    def __init__(self, cache_dir: Optional[str] = None):
+        super().__init__(
+            "FNHK",
+            cache_dir=cache_dir,
+            time_col_dict={
+                "pripady": "Datum_prijeti",
+                "vykony": "Datum_provedeni_vykonu",
+                "zup": "Datum_provedeni_vykonu",
+            },
+            keep_original_keys=True,
+        )
+
+    def make_db(self) -> Database:
+        db = super().make_db()
+
+        # Drop redundant key columns
+        db.table_dict["pripady"].df.drop(columns=["Identifikace_pripadu"], inplace=True)
+        db.table_dict["vykony"].df.drop(columns=["Identifikace_pripadu"], inplace=True)
+        db.table_dict["zup"].df.drop(columns=["Identifikace_pripadu"], inplace=True)
 
         return db
 
