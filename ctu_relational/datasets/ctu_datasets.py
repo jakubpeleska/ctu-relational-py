@@ -13,6 +13,7 @@ __ALL__ = [
     "Credit",
     "Expenditures",
     "Employee",
+    "Financial",
     "FNHK",
     "LegalActs",
     "SAP",
@@ -192,6 +193,29 @@ class Employee(CTUDataset):
         )
 
         return db
+
+
+class Financial(CTUDataset):
+    """
+    PKDD'99 Financial dataset contains 606 successful and 76 not \
+    successful loans along with their information and transactions. 
+    """
+
+    val_timestamp = pd.Timestamp("1997-08-01")
+    test_timestamp = pd.Timestamp("1998-03-01")
+
+    def __init__(self, cache_dir: Optional[str] = None):
+        super().__init__(
+            "financial",
+            cache_dir=cache_dir,
+            time_col_dict={
+                "account": "date",
+                "card": "issued",
+                "loan": "date",
+                "trans": "date",
+            },
+            keep_original_keys=False,
+        )
 
 
 class FNHK(CTUDataset):
