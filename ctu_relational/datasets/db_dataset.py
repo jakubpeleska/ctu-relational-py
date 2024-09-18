@@ -33,7 +33,7 @@ class DBDataset(Dataset):
         database: Optional[str] = None,
         time_col_dict: Optional[Dict[str, str]] = None,
         keep_original_keys: bool = False,
-        keep_original_compound_keys: bool = False,
+        keep_original_compound_keys: bool = True,
     ):
         """Create a database dataset object.
 
@@ -54,7 +54,7 @@ class DBDataset(Dataset):
                 after duplication during re-indexing. This is useful when the keys contain information \
                 beyond just their relationship to other rows. Defaults to False.
             keep_original_compound_keys (bool, optional): Whether to keep original compound primary \
-                and foreign keys as they often contain useful data. Defaults to False.
+                and foreign keys as they often contain useful data. Defaults to True.
         """
 
         self.remote_url = (

@@ -56,7 +56,7 @@ class CTUDataset(DBDataset):
         cache_dir: Optional[str] = None,
         time_col_dict: Optional[Dict[str, str]] = None,
         keep_original_keys: bool = False,
-        keep_original_compound_keys: bool = False,
+        keep_original_compound_keys: bool = True,
     ):
         """Create a database dataset object.
 
@@ -67,6 +67,8 @@ class CTUDataset(DBDataset):
             keep_original_keys (bool, optional): Whether to keep original primary and foreign keys \
                 after duplication during re-indexing. This is useful when the keys contain information \
                 beyond just their relationship to other rows. Defaults to False.
+            keep_original_compound_keys (bool, optional): Whether to keep original compound primary \
+                and foreign keys as they often contain useful data. Defaults to True.
         """
         super().__init__(
             cache_dir=cache_dir,
