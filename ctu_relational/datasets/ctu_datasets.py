@@ -3,17 +3,25 @@ from typing import Dict, Literal, Optional, Union
 
 import pandas as pd
 
-from relbench.base import Database
+from relbench.base import Database, Table
 
 from .db_dataset import DBDataset
 
 __ALL__ = [
     "Accidents",
+    "AdventureWorks",
     "Airline",
+    "Credit",
+    "ErgastF1",
     "Expenditures",
     "Employee",
+    "Financial",
+    "Geneea",
+    "FNHK",
     "LegalActs",
+    "SAP",
     "Seznam",
+    "Stats",
     "TPCC",
     "TPCD",
     "TPCDS",
@@ -48,6 +56,7 @@ class CTUDataset(DBDataset):
         cache_dir: Optional[str] = None,
         time_col_dict: Optional[Dict[str, str]] = None,
         keep_original_keys: bool = False,
+        keep_original_compound_keys: bool = True,
     ):
         """Create a database dataset object.
 
@@ -58,6 +67,8 @@ class CTUDataset(DBDataset):
             keep_original_keys (bool, optional): Whether to keep original primary and foreign keys \
                 after duplication during re-indexing. This is useful when the keys contain information \
                 beyond just their relationship to other rows. Defaults to False.
+            keep_original_compound_keys (bool, optional): Whether to keep original compound primary \
+                and foreign keys as they often contain useful data. Defaults to True.
         """
         super().__init__(
             cache_dir=cache_dir,
@@ -70,6 +81,7 @@ class CTUDataset(DBDataset):
             database=database,
             time_col_dict=time_col_dict,
             keep_original_keys=keep_original_keys,
+            keep_original_compound_keys=keep_original_compound_keys,
         )
 
 
@@ -86,6 +98,47 @@ class Accidents(CTUDataset):
         )
 
 
+class AdventureWorks(CTUDataset):
+    """
+    Adventure Works 2014 (OLTP version) is a sample database for Microsoft SQL Server, \
+    which has replaced Northwind and Pub sample databases that were shipped earlier. \
+    The database is about a fictious, multinational bicycle manufacturer called \
+    Adventure Works Cycles.
+    """
+
+    val_timestamp = pd.Timestamp("2014-01-01")
+    test_timestamp = pd.Timestamp("2014-04-01")
+
+    def __init__(self, cache_dir: Optional[str] = None):
+        super().__init__(
+            "AdventureWorks2014",
+            cache_dir=cache_dir,
+            time_col_dict={
+                "Address": "ModifiedDate",
+                "BusinessEntityAddress": "ModifiedDate",
+                "CreditCard": "ModifiedDate",
+                "CurrencyRate": "ModifiedDate",
+                "EmailAddress": "ModifiedDate",
+                "Password": "ModifiedDate",
+                "Person": "ModifiedDate",
+                "PersonCreditCard": "ModifiedDate",
+                "PersonPhone": "ModifiedDate",
+                "PurchaseOrderDetail": "ModifiedDate",
+                "PurchaseOrderHeader": "ModifiedDate",
+                "SalesOrderDetail": "ModifiedDate",
+                "SalesOrderHeader": "ModifiedDate",
+                "SalesOrderHeaderSalesReason": "ModifiedDate",
+                "SpecialOfferProduct": "ModifiedDate",
+                "TransactionHistory": "ModifiedDate",
+                "TransactionHistoryArchive": "ModifiedDate",
+                "WorkOrder": "ModifiedDate",
+                "WorkOrderRouting": "ModifiedDate",
+            },
+            keep_original_keys=False,
+            keep_original_compound_keys=True,
+        )
+
+
 class Airline(CTUDataset):
     val_timestamp = pd.Timestamp("2016-01-18")
     test_timestamp = pd.Timestamp("2016-01-25")
@@ -97,6 +150,69 @@ class Airline(CTUDataset):
             time_col_dict={"On_Time_On_Time_Performance_2016_1": "FlightDate"},
             keep_original_keys=False,
         )
+
+
+class Credit(CTUDataset):
+    val_timestamp = pd.Timestamp("1999-09-01")
+    test_timestamp = pd.Timestamp("1999-09-23")
+
+    def __init__(self, cache_dir: Optional[str] = None):
+        super().__init__(
+            "Credit",
+            cache_dir=cache_dir,
+            time_col_dict={
+                "charge": "charge_dt",
+                "payment": "payment_dt",
+            },
+            keep_original_keys=False,
+        )
+
+    def make_db(self) -> Database:
+        db = super().make_db()
+
+        db.table_dict["member"].df.drop(columns=["photograph"], inplace=True)
+
+        return db
+
+
+class ErgastF1(CTUDataset):
+    """
+    Ergast.com is a webservice that provides a database of Formula 1 races, \
+    starting from the 1950 season until today. The dataset includes information \
+    such as the time taken in each lap, the time taken for pit stops, the performance \
+    in the qualifying rounds etc. of all Formula 1 races from 1950 to 2017.
+    """
+
+    val_timestamp = pd.Timestamp("1997-01-01")
+    test_timestamp = pd.Timestamp("2009-01-01")
+
+    TIME_ORIGIN = pd.Timestamp("1970-01-01")
+
+    def __init__(self, cache_dir: Optional[str] = None):
+        super().__init__(
+            "ErgastF1",
+            cache_dir=cache_dir,
+            time_col_dict={"drivers": "dob", "races": "date"},
+            keep_original_keys=False,
+            keep_original_compound_keys=True,
+        )
+
+    def make_db(self) -> Database:
+        db = super().make_db()
+
+        # Convert time column to datetime
+        db.table_dict["pitStops"].df["time"] = (
+            self.TIME_ORIGIN + db.table_dict["pitStops"].df["time"]
+        )
+
+        # Merge date and time columns
+        db.table_dict["races"].df["time"] = (
+            db.table_dict["races"].df["time"].fillna(pd.Timedelta(hours=12))
+        )
+        db.table_dict["races"].df["date"] += db.table_dict["races"].df["time"]
+        db.table_dict["races"].df.drop(columns=["time"], inplace=True)
+
+        return db
 
 
 class Expenditures(CTUDataset):
@@ -168,6 +284,87 @@ class Employee(CTUDataset):
         return db
 
 
+class Financial(CTUDataset):
+    """
+    PKDD'99 Financial dataset contains 606 successful and 76 not \
+    successful loans along with their information and transactions. 
+    """
+
+    val_timestamp = pd.Timestamp("1997-08-01")
+    test_timestamp = pd.Timestamp("1998-03-01")
+
+    def __init__(self, cache_dir: Optional[str] = None):
+        super().__init__(
+            "financial",
+            cache_dir=cache_dir,
+            time_col_dict={
+                "account": "date",
+                "card": "issued",
+                "loan": "date",
+                "trans": "date",
+            },
+            keep_original_keys=False,
+        )
+
+
+class FNHK(CTUDataset):
+    """
+    Anonymised data from a hospital in Hradec Kralove, Czech Republic, \
+    about treatment and medication.
+    """
+
+    val_timestamp = pd.Timestamp("2015-01-01")
+    test_timestamp = pd.Timestamp("2016-01-01")
+
+    def __init__(self, cache_dir: Optional[str] = None):
+        super().__init__(
+            "FNHK",
+            cache_dir=cache_dir,
+            time_col_dict={
+                "pripady": "Datum_prijeti",
+                "vykony": "Datum_provedeni_vykonu",
+                "zup": "Datum_provedeni_vykonu",
+            },
+            keep_original_keys=True,
+        )
+
+    def make_db(self) -> Database:
+        db = super().make_db()
+
+        # Drop redundant key columns
+        db.table_dict["pripady"].df.drop(columns=["Identifikace_pripadu"], inplace=True)
+        db.table_dict["vykony"].df.drop(columns=["Identifikace_pripadu"], inplace=True)
+        db.table_dict["zup"].df.drop(columns=["Identifikace_pripadu"], inplace=True)
+
+        return db
+
+
+class Geneea(CTUDataset):
+    """
+    Data on deputies and senators in the Czech Republic.
+    """
+
+    val_timestamp = pd.Timestamp("2015-03-01")
+    test_timestamp = pd.Timestamp("2015-08-01")
+
+    def __init__(self, cache_dir: Optional[str] = None):
+        super().__init__(
+            "geneea",
+            cache_dir=cache_dir,
+            time_col_dict={"hl_hlasovani": "datum"},
+            keep_original_keys=False,
+        )
+
+    def make_db(self) -> Database:
+        db = super().make_db()
+
+        # Combine date and time columns
+        db.table_dict["hl_hlasovani"].df["datum"] += db.table_dict["hl_hlasovani"].df["cas"]
+        db.table_dict["hl_hlasovani"].df.drop(columns=["cas"], inplace=True)
+
+        return db
+
+
 class LegalActs(CTUDataset):
     """
     Bulgarian court decision metadata.
@@ -195,6 +392,63 @@ class LegalActs(CTUDataset):
         return db
 
 
+class SAP(CTUDataset):
+    """
+    Syntetic dataset containing information about sales of a Credit++.
+    """
+
+    val_timestamp = pd.Timestamp("2007-05-30")
+    test_timestamp = pd.Timestamp("2007-06-15")
+
+    def __init__(self, cache_dir: Optional[str] = None):
+        super().__init__(
+            "SAP",
+            cache_dir=cache_dir,
+            time_col_dict={"Sales": "EVENT_DATE"},
+            keep_original_keys=True,
+        )
+
+    def make_db(self) -> Database:
+        db = super().make_db()
+
+        mailings_1_2 = db.table_dict["Mailings1_2"].df
+        mailings_1_2.drop(columns=["KxIndex", "REFID"], inplace=True)
+        fk_name = [
+            k
+            for k, v in db.table_dict["Mailings1_2"].fkey_col_to_pkey_table.items()
+            if v == "Customers"
+        ][0]
+
+        mailings_3 = db.table_dict["mailings3"].df
+        fk_col, _ = self._reindex_fk(
+            {tn: t.df for tn, t in db.table_dict.items()},
+            "mailings3",
+            ["REFID"],
+            "Customers",
+            ["ID"],
+        )
+        mailings_3[fk_name] = fk_col
+        mailings_3.drop(columns=["REFID"], inplace=True)
+        mailings_3["__PK__"] += mailings_1_2["__PK__"].max() + 1
+
+        db.table_dict["Customers"].df.drop(columns=["ID", "GEOID"], inplace=True)
+        db.table_dict["Sales"].df.drop(columns=["EVENTID", "REFID"], inplace=True)
+        db.table_dict["Demog"].df.drop(columns=["GEOID"], inplace=True)
+
+        db.table_dict.pop("Mailings1_2")
+        db.table_dict.pop("mailings3")
+
+        mailings = pd.concat([mailings_1_2, mailings_3], axis=0)
+        db.table_dict["Mailings"] = Table(
+            df=mailings,
+            fkey_col_to_pkey_table={fk_name: "Customers"},
+            pkey_col="__PK__",
+            time_col=None,
+        )
+
+        return db
+
+
 # class Sales(CTUDataset):
 #     def __init__(self, cache_dir: Optional[str] = None):
 #         super().__init__(
@@ -216,6 +470,31 @@ class Seznam(CTUDataset):
                 "dobito": "month_year_datum_transakce",
                 "probehnuto": "month_year_datum_transakce",
                 "probehnuto_mimo_penezenku": "Month/Year",
+            },
+            keep_original_keys=False,
+        )
+
+
+class Stats(CTUDataset):
+    """
+    An anonymized dump of all user-contributed content on the Stats Stack Exchange network.
+    """
+
+    val_timestamp = pd.Timestamp("2013-11-01")
+    test_timestamp = pd.Timestamp("2014-05-01")
+
+    def __init__(self, cache_dir: Optional[str] = None):
+        super().__init__(
+            "stats",
+            cache_dir=cache_dir,
+            time_col_dict={
+                "badges": "Date",
+                "comments": "CreationDate",
+                "postHistory": "CreationDate",
+                "postLinks": "CreationDate",
+                "posts": "LasActivityDate",
+                "users": "CreationDate",
+                "votes": "CreationDate",
             },
             keep_original_keys=False,
         )
