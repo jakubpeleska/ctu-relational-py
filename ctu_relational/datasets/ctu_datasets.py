@@ -469,10 +469,19 @@ class Seznam(CTUDataset):
             time_col_dict={
                 "dobito": "month_year_datum_transakce",
                 "probehnuto": "month_year_datum_transakce",
-                "probehnuto_mimo_penezenku": "Month/Year",
+                "probehnuto_mimo_penezenku": "Month_Year",
             },
             keep_original_keys=False,
         )
+
+    def make_db(self) -> Database:
+        db = super().make_db()
+
+        db.table_dict["probehnuto_mimo_penezenku"].df.rename(
+            columns={"Month/Year": "Month_Year"}, inplace=True
+        )
+
+        return db
 
 
 class Stats(CTUDataset):
