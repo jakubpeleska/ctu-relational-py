@@ -1,8 +1,8 @@
 # CTU Relational
 
 [![website](https://img.shields.io/badge/website-live-brightgreen)](https://relational.fel.cvut.cz)
-[![PyPI version](https://badge.fury.io/py/ctu-relational.svg)](https://badge.fury.io/py/ctu-relational)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+[![PyPI version](https://img.shields.io/pypi/v/ctu-relational?color=brightgreen)](https://pypi.org/project/ctu-relational/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](https://opensource.org/licenses/MIT)
 
 The CTU Prague Relational Learning Repository was originally published in [2015](https://arxiv.org/abs/1511.03086v1) with a goal to support machine learning research with multi-relational data. Today, the repository is hosted on https://relational.fel.cvut.cz and contains more than [80](https://relational.fel.cvut.cz/statistics) different datasets stored in SQL databases.
 
