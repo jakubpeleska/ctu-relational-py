@@ -1,5 +1,5 @@
-import contextlib
-from typing import Dict, List, Optional
+import warnings
+from typing import Dict, List, Optional, Union
 
 import pandas as pd
 import sqlalchemy as sa
@@ -10,9 +10,10 @@ from redelex.db import DBInspector, ForeignKey
 from redelex.db.utils import (
     SQL_DATE_MAP,
     SQL_DATE_TYPES,
-    SQL_TO_PANDAS,
     get_db_connection,
     get_db_url,
+    reindex_fk,
+    resolve_column_dtype,
 )
 
 __all__ = ["DBDataset"]
@@ -35,7 +36,7 @@ class DBDataset(Dataset):
         user: Optional[str] = None,
         password: Optional[str] = None,
         host: Optional[str] = None,
-        port: Optional[str] = None,
+        port: Optional[Union[str, int]] = None,
         database: Optional[str] = None,
         time_col_dict: Optional[Dict[str, str]] = None,
         keep_original_keys: bool = False,
@@ -77,13 +78,16 @@ class DBDataset(Dataset):
         super().__init__(cache_dir)
 
     def __repr__(self) -> str:
-        return f"{self.__class__.__name__}(remote_url={self.remote_url})"
+        # Render via sa.URL to hide the password in logs and tracebacks.
+        url = sa.engine.make_url(self.remote_url)
+        return f"{self.__class__.__name__}(remote_url={url})"
 
     def customize_db(self, db: Database) -> Database:
         """
         Override this method to add custom modifications to the database object.
         Function is called after the database is created and before the original
-        primary and foreign keys are removed.
+        primary and foreign keys are removed. The default implementation returns
+        the database unchanged.
 
         Args:
             db (Database): The database object to customize.
@@ -91,7 +95,7 @@ class DBDataset(Dataset):
         Returns:
             Database: The customized database object.
         """
-        raise NotImplementedError
+        return db
 
     def make_db(self) -> Database:
         """
@@ -101,73 +105,85 @@ class DBDataset(Dataset):
             Database: The Database instance.
         """
         remote_con = get_db_connection(self.remote_url)
+        try:
+            inspector = DBInspector(remote_con)
 
-        inspector = DBInspector(remote_con)
+            remote_md = sa.MetaData()
+            remote_md.reflect(bind=inspector.engine)
 
-        remote_md = sa.MetaData()
-        remote_md.reflect(bind=inspector.engine)
+            table_names = inspector.get_tables()
 
-        table_names = inspector.get_tables()
+            df_dict: Dict[str, pd.DataFrame] = {}
+            fk_dict: Dict[str, List[ForeignKey]] = {}
 
-        df_dict: Dict[str, pd.DataFrame] = {}
-        fk_dict: Dict[str, List[ForeignKey]] = {}
+            for t_name in tqdm(table_names, desc="Downloading tables"):
+                sql_table = sa.Table(t_name, remote_md)
 
-        for t_name in tqdm(table_names, desc="Downloading tables"):
-            sql_table = sa.Table(t_name, remote_md)
+                dtypes: Dict[str, str] = {}
+                sql_types_dict: Dict[str, sa.types.TypeEngine] = {}
 
-            dtypes: Dict[str, str] = {}
-            sql_types_dict: Dict[str, sa.types.TypeEngine] = {}
+                for c in sql_table.columns:
+                    dtype, sql_type = resolve_column_dtype(c)
 
-            for c in sql_table.columns:
-                try:
-                    sql_type = type(c.type.as_generic())
-                except NotImplementedError:
-                    sql_type = None
+                    if dtype is not None:
+                        dtypes[c.name] = dtype
+                        sql_types_dict[c.name] = sql_type
+                    else:
+                        warnings.warn(
+                            f"Unknown data type {c.type} in {t_name}.{c.name}; "
+                            "the column is skipped.",
+                            stacklevel=2,
+                        )
 
-                dtype = SQL_TO_PANDAS.get(sql_type, None)
+                statement = sa.select(sql_table.columns)
+                query = statement.compile(remote_con.engine)
+                df = pd.read_sql_query(str(query), con=remote_con, dtype=dtypes)
 
-                # Special case for YEAR type
-                if dtype is None and c.type.__str__() == "YEAR":
-                    dtype = pd.Int32Dtype()
-                    sql_type = sa.types.Integer
+                time_col = self.time_col_dict.get(t_name, None)
+                if time_col is not None and time_col not in df.columns:
+                    raise ValueError(
+                        f"Configured time column '{time_col}' not found in "
+                        f"table '{t_name}'."
+                    )
 
-                if dtype is not None:
-                    dtypes[c.name] = dtype
-                    sql_types_dict[c.name] = sql_type
-                else:
-                    print(f"Unknown data type {c.type} in {t_name}.{c.name}")
+                for col, sql_type in sql_types_dict.items():
+                    if sql_type in SQL_DATE_TYPES or time_col == col:
+                        try:
+                            df[col] = pd.to_datetime(df[col])
+                        except (
+                            ValueError,
+                            TypeError,
+                            pd.errors.OutOfBoundsDatetime,
+                        ) as e:
+                            warnings.warn(
+                                f"Could not convert {t_name}.{col} to datetime: {e}",
+                                stacklevel=2,
+                            )
 
-            statement = sa.select(sql_table.columns)
-            query = statement.compile(remote_con.engine)
-            df = pd.read_sql_query(str(query), con=remote_con, dtype=dtypes)
+                    if SQL_DATE_MAP.get(sql_type, None) is not None:
+                        try:
+                            df[col] = df[col].astype(SQL_DATE_MAP[sql_type], errors="raise")
+                        except (
+                            ValueError,
+                            TypeError,
+                            pd.errors.OutOfBoundsDatetime,
+                        ) as e:
+                            warnings.warn(
+                                f"Could not convert {t_name}.{col} to "
+                                f"{SQL_DATE_MAP[sql_type]}: {e}",
+                                stacklevel=2,
+                            )
 
-            for col, sql_type in sql_types_dict.items():
-                if (
-                    sql_type in SQL_DATE_TYPES
-                    or self.time_col_dict.get(t_name, None) == col
-                ):
-                    try:
-                        df[col] = pd.to_datetime(df[col])
-                    except pd.errors.OutOfBoundsDatetime:
-                        print(f"Out of bounds datetime in {t_name}.{col}")
-                    except Exception as e:
-                        print(f"Error converting {t_name}.{col} to datetime: {e}")
+                # Create index column used as artificial primary key
+                df.index.name = "__PK__"
+                df.reset_index(inplace=True)
 
-                if SQL_DATE_MAP.get(sql_type, None) is not None:
-                    try:
-                        df[col] = df[col].astype(SQL_DATE_MAP[sql_type], errors="raise")
-                    except pd.errors.OutOfBoundsDatetime:
-                        print(f"Out of bounds datetime in {t_name}.{col}")
-                    except Exception as e:
-                        print(f"Error converting {t_name}.{col} to datetime: {e}")
+                df_dict[t_name] = df
 
-            # Create index column used as artificial primary key
-            df.index.name = "__PK__"
-            df.reset_index(inplace=True)
-
-            df_dict[t_name] = df
-
-            fk_dict[t_name] = inspector.get_foreign_keys(t_name)
+                fk_dict[t_name] = inspector.get_foreign_keys(t_name)
+        finally:
+            remote_con.close()
+            remote_con.engine.dispose()
 
         table_dict: Dict[str, Table] = {}
 
@@ -177,7 +193,7 @@ class DBDataset(Dataset):
             fkey_col_to_pkey_table: Dict[str, str] = {}
 
             for fk in fk_dict[t_name]:
-                fk_col, fk_name = self._reindex_fk(
+                fk_col, fk_name = reindex_fk(
                     df_dict, t_name, fk.src_columns, fk.ref_table, fk.ref_columns
                 )
 
@@ -194,10 +210,7 @@ class DBDataset(Dataset):
         db = Database(table_dict)
 
         # Allow custom modifications here (e.g. dropping columns, etc.)
-        try:
-            db = self.customize_db(db)
-        except NotImplementedError:
-            contextlib.suppress(NotImplementedError)
+        db = self.customize_db(db)
 
         # Remove original primary and foreign keys
         if not self.keep_original_keys:
@@ -217,37 +230,15 @@ class DBDataset(Dataset):
                     drop_cols |= {c.name for c in sql_table.primary_key.columns}
 
                 for fk in sql_table.foreign_key_constraints:
-                    if fk.referred_table not in db.table_dict:
+                    if fk.referred_table.name not in db.table_dict:
                         continue
 
                     if not self.keep_original_compound_keys or len(fk.columns) == 1:
                         # Drop foreign key columns
                         drop_cols |= {c.name for c in fk.columns}
 
+                # customize_db may have dropped some of these columns already.
+                drop_cols &= set(table.df.columns)
                 table.df.drop(columns=drop_cols, inplace=True)
 
-        remote_con.close()
-
         return db
-
-    def _reindex_fk(
-        self,
-        df_dict: Dict[str, pd.DataFrame],
-        src_table: str,
-        src_columns: List[str],
-        ref_table: str,
-        ref_columns: List[str],
-    ):
-        fk_name = f"FK_{ref_table}_" + "_".join(src_columns)
-
-        df_src = df_dict[src_table][src_columns]
-        df_ref = df_dict[ref_table]
-
-        fk_col = df_src.merge(
-            df_ref,
-            how="left",
-            left_on=src_columns,
-            right_on=ref_columns,
-        )["__PK__"]
-
-        return fk_col, fk_name
