@@ -17,8 +17,15 @@ class AttachDictTransform(BaseTransform):
         if not isinstance(attach_data, list):
             self.attach_data = [attach_data]
         for t in self.attach_data:
-            assert isinstance(t, tuple) and len(t) == 2
-            assert isinstance(t[0], str) and isinstance(t[1], dict)
+            if not (
+                isinstance(t, tuple)
+                and len(t) == 2
+                and isinstance(t[0], str)
+                and isinstance(t[1], dict)
+            ):
+                raise TypeError(
+                    f"attach_data must be (name, dict) tuples or a list of them, got {t!r}"
+                )
 
     def forward(self, batch: HeteroData) -> HeteroData:
         for nt in batch.node_types:
