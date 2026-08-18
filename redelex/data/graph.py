@@ -44,8 +44,9 @@ from redelex.utils.datetime import to_unix_time
 from .text_embedder import GloveTextEmbedder, TextEmbedder
 
 
-def remove_pkey_fkey(col_to_stype: Dict[str, Any], table: Table) -> dict:
-    r"""Remove pkey, fkey columns since they will not be used as input feature."""
+def remove_pkey_fkey(col_to_stype: Dict[str, Any], table: Table) -> None:
+    r"""Remove pkey, fkey columns (in place) since they will not be used as
+    input features."""
     if table.pkey_col is not None and table.pkey_col in col_to_stype:
         col_to_stype.pop(table.pkey_col)
     for fkey in table.fkey_col_to_pkey_table:
@@ -65,9 +66,10 @@ def make_pkey_fkey_graph(
 
     Args:
         db: A database object containing a set of tables.
-        col_to_stype_dict: Column to stype for
-            each table.
-        text_embedder_cfg: Text embedder config.
+        col_to_stype_dict: Column to stype for each table. Primary and foreign
+            key entries are removed from the given dictionaries in place.
+        text_embedder: Text embedder used for text columns. Defaults to
+            :class:`GloveTextEmbedder` when None.
         cache_dir: A directory for storing materialized tensor
             frames. If specified, we will either cache the file or use the
             cached file. If not specified, we will not use cached file and
@@ -75,8 +77,9 @@ def make_pkey_fkey_graph(
         target: [table_name, col_name] pair specifying the target column.
 
     Returns:
-        HeteroData: The heterogeneous :class:`PyG` object with
-            :class:`TensorFrame` feature.
+        Tuple[HeteroData, Dict]: The heterogeneous :class:`PyG` object with
+            :class:`TensorFrame` features, and the column statistics of each
+            table.
     """
     data = HeteroData()
     col_stats_dict = dict()
@@ -91,8 +94,14 @@ def make_pkey_fkey_graph(
         # Materialize the tables into tensor frames:
         df = table.df
         # Ensure that pkey is consecutive.
-        if table.pkey_col is not None:
-            assert (df[table.pkey_col].values == np.arange(len(df))).all()
+        if (
+            table.pkey_col is not None
+            and not (df[table.pkey_col].values == np.arange(len(df))).all()
+        ):
+            raise ValueError(
+                f"The primary key column '{table.pkey_col}' of table "
+                f"'{table_name}' must be consecutive (0..len-1)."
+            )
 
         col_to_stype = col_to_stype_dict[table_name]
 
@@ -100,7 +109,7 @@ def make_pkey_fkey_graph(
         # feature.
         remove_pkey_fkey(col_to_stype, table)
 
-        if len(col_to_stype) == 0:  # Add constant feature in case df is empty:
+        if len(col_to_stype) == 0:  # Table has no feature columns: add a constant.
             col_to_stype = {"__const__": stype.numerical}
             # We need to add edges later, so we need to also keep the fkeys
             fkey_dict = {key: df[key] for key in table.fkey_col_to_pkey_table}
@@ -129,14 +138,17 @@ def make_pkey_fkey_graph(
         # Add edges:
         for fkey_name, pkey_table_name in table.fkey_col_to_pkey_table.items():
             pkey_index = df[fkey_name]
-            # Filter out dangling foreign keys
+            # Filter out missing (NaN) foreign keys:
             mask = ~pkey_index.isna()
             fkey_index = torch.arange(len(pkey_index))
-            # Filter dangling foreign keys:
             pkey_index = torch.from_numpy(pkey_index[mask].astype(int).values)
             fkey_index = fkey_index[torch.from_numpy(mask.values)]
-            # Ensure no dangling fkeys
-            assert (pkey_index < len(db.table_dict[pkey_table_name])).all()
+            # Out-of-range foreign keys indicate a broken re-indexing:
+            if not (pkey_index < len(db.table_dict[pkey_table_name])).all():
+                raise ValueError(
+                    f"Foreign key '{fkey_name}' of table '{table_name}' contains "
+                    f"values out of range of table '{pkey_table_name}'."
+                )
 
             # fkey -> pkey edges
             edge_index = torch.stack([fkey_index, pkey_index], dim=0)
