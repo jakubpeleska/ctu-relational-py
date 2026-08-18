@@ -25,11 +25,11 @@ class ComposedLoader:
             raise ValueError(f"Unknown mode: {self.mode}")
 
         if self.mode == "rnd_weighted":
-            assert weights is not None, "Weights must be provided for rnd_weighted mode"
-            assert len(weights) == len(self.loaders), (
-                "Weights length must match number of loaders"
-            )
-            self.weights = weights
+            if weights is None:
+                raise ValueError("Weights must be provided for rnd_weighted mode")
+            if len(weights) != len(self.loaders):
+                raise ValueError("Weights length must match number of loaders")
+            self.weights = torch.as_tensor(weights, dtype=torch.float)
 
     def __iter__(self):
         self.idx = 0
@@ -47,10 +47,16 @@ class ComposedLoader:
             rnd_idx = torch.randperm(rnd_cat.shape[0])
             self.rnd_loader_idx = rnd_cat[rnd_idx].long().tolist()
         elif self.mode == "rnd_weighted":
-            rnd_cat = torch.multinomial(
-                self.weights, num_samples=self.total_len, replacement=True
+            # Weighted sampling over per-batch slots without replacement, so no
+            # loader can be drawn more often than its actual length.
+            slot_loader = torch.repeat_interleave(
+                torch.arange(len(self.loaders_len)), torch.tensor(self.loaders_len)
             )
-            self.rnd_loader_idx = rnd_cat.long().tolist()
+            slot_weights = self.weights[slot_loader]
+            picks = torch.multinomial(
+                slot_weights, num_samples=self.total_len, replacement=False
+            )
+            self.rnd_loader_idx = slot_loader[picks].long().tolist()
         self.loader_iter = [iter(self.loaders[tn]) for tn in self.names]
         return self
 
