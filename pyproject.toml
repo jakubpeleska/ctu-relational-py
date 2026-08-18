@@ -4,7 +4,8 @@ build-backend = "flit_core.buildapi"
 
 [project]
 name = "redelex"
-version = "0.6.2"
+# The version is read from redelex/__init__.py (__version__) by flit.
+dynamic = ["version"]
 description = "ReDeLEx: A Framework for Relational Deep Learning Exploration"
 authors = [{ name = "Jakub Peleška", email = "jakub.peleska@fel.cvut.cz" }]
 readme = "README.md"
@@ -75,6 +76,7 @@ dev = [
     "ipywidgets>=8.1.8",
     "matplotlib>=3.10.8",
     "pre-commit>=4.5.1",
+    "pytest>=8.3",
 ]
 experiments = [
     "lightning>=2.6.0",
@@ -143,6 +145,14 @@ explicit = true
 Homepage = "https://github.com/jakubpeleska/redelex"
 Issues = "https://github.com/jakubpeleska/redelex/issues"
 
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -m 'not needs_network and not slow'"
+markers = [
+    "slow: long-running tests, excluded by default",
+    "needs_network: requires internet access (remote CTU database), excluded by default",
+]
+
 [tool.ruff]
 line-length = 92
 target-version = "py310"
@@ -155,7 +165,3 @@ select = [
     "I",   # isort
     "SIM", # flake8-simplify
 ]
-
-
-[tool.ruff.lint.pydocstyle]
-convention = "google"
