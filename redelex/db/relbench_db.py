@@ -16,20 +16,24 @@ class RelbenchDBInterface(DBInterface):
     def __init__(self, relbench_dataset: RelbenchDataset):
         self.relbench_dataset = relbench_dataset
         self.db = None
+        self.con = None
 
         super().__init__()
 
     def connect(self):
         self.db = self.relbench_dataset.get_db(False)
+        # A dedicated connection: registrations on the module-level default
+        # connection would collide between interface instances.
+        self.con = duckdb.connect()
         for tname, table in self.db.table_dict.items():
-            duckdb.register(tname, table.df)
+            self.con.register(tname, table.df)
 
     def get_primary_key(self, table_name: str) -> list[str]:
         return [self.db.table_dict[table_name].pkey_col]
 
     def get_foreign_keys(self, table_name: str) -> list[ForeignKey]:
         return [
-            ForeignKey([fk], ref_table, [self.db.table_dict[table_name].pkey_col])
+            ForeignKey([fk], ref_table, [self.db.table_dict[ref_table].pkey_col])
             for fk, ref_table in self.db.table_dict[
                 table_name
             ].fkey_col_to_pkey_table.items()
@@ -52,7 +56,7 @@ class RelbenchDBInterface(DBInterface):
     def sql(self, query: str) -> "pd.DataFrame":
         if self.db is None:
             self.connect()
-        return duckdb.sql(query).df()
+        return self.con.sql(query).df()
 
     def get_table(self, table_name: str) -> "pd.DataFrame":
         return self.db.table_dict[table_name].df
@@ -61,6 +65,7 @@ class RelbenchDBInterface(DBInterface):
         return self.db
 
     def close(self):
-        for tname in self.db.table_dict:
-            duckdb.unregister(tname)
+        if self.con is not None:
+            self.con.close()
+            self.con = None
         self.db = None

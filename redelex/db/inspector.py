@@ -76,7 +76,7 @@ class DBInspector:
             table (str): The name of the table.
 
         Returns:
-            list[ForeignKey]: A dictionary mapping sets of constrained columns to their corresponding ForeignKey objects.
+            list[ForeignKey]: The foreign key constraints of the table.
         """
         return [
             ForeignKey(

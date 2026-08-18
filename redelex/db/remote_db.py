@@ -1,3 +1,4 @@
+import warnings
 from functools import cached_property
 
 import pandas as pd
@@ -11,14 +12,18 @@ from .schema import DBSchema, TableSchema
 from .utils import (
     SQL_DATE_MAP,
     SQL_DATE_TYPES,
-    SQL_TO_PANDAS,
     get_db_connection,
+    reindex_fk,
+    resolve_column_dtype,
 )
 
 
 class RemoteDBInterface(DBInterface):
     def __init__(self, connection_url: str):
         self.connection_url = connection_url
+        self.connection = None
+        self.inspector = None
+        self.remote_md = None
 
         super().__init__()
 
@@ -33,8 +38,9 @@ class RemoteDBInterface(DBInterface):
         self.remote_md.reflect(bind=self.inspector.engine)
 
     def close(self):
-        if self.connection:
+        if self.connection is not None:
             self.connection.close()
+            self.connection.engine.dispose()
             self.connection = None
             self.inspector = None
             self.remote_md = None
@@ -84,23 +90,17 @@ class RemoteDBInterface(DBInterface):
         sql_types_dict: dict[str, sa.types.TypeEngine] = {}
 
         for c in sql_table.columns:
-            try:
-                sql_type = type(c.type.as_generic())
-            except NotImplementedError:
-                sql_type = None
-
-            dtype = SQL_TO_PANDAS.get(sql_type, None)
-
-            # Special case for YEAR type
-            if dtype is None and c.type.__str__() == "YEAR":
-                dtype = pd.Int32Dtype()
-                sql_type = sa.types.Integer
+            dtype, sql_type = resolve_column_dtype(c)
 
             if dtype is not None:
                 dtypes[c.name] = dtype
                 sql_types_dict[c.name] = sql_type
             else:
-                print(f"Unknown data type {c.type} in {table_name}.{c.name}")
+                warnings.warn(
+                    f"Unknown data type {c.type} in {table_name}.{c.name}; "
+                    "the column is skipped.",
+                    stacklevel=2,
+                )
 
         statement = sa.select(sql_table.columns)
         query = statement.compile(self.connection.engine)
@@ -110,18 +110,21 @@ class RemoteDBInterface(DBInterface):
             if sql_type in SQL_DATE_TYPES:
                 try:
                     df[col] = pd.to_datetime(df[col])
-                except pd.errors.OutOfBoundsDatetime:
-                    print(f"Out of bounds datetime in {table_name}.{col}")
-                except Exception as e:
-                    print(f"Error converting {table_name}.{col} to datetime: {e}")
+                except (ValueError, TypeError, pd.errors.OutOfBoundsDatetime) as e:
+                    warnings.warn(
+                        f"Could not convert {table_name}.{col} to datetime: {e}",
+                        stacklevel=2,
+                    )
 
             if SQL_DATE_MAP.get(sql_type, None) is not None:
                 try:
                     df[col] = df[col].astype(SQL_DATE_MAP[sql_type], errors="raise")
-                except pd.errors.OutOfBoundsDatetime:
-                    print(f"Out of bounds datetime in {table_name}.{col}")
-                except Exception as e:
-                    print(f"Error converting {table_name}.{col} to datetime: {e}")
+                except (ValueError, TypeError, pd.errors.OutOfBoundsDatetime) as e:
+                    warnings.warn(
+                        f"Could not convert {table_name}.{col} to "
+                        f"{SQL_DATE_MAP[sql_type]}: {e}",
+                        stacklevel=2,
+                    )
 
         return df
 
@@ -150,7 +153,7 @@ class RemoteDBInterface(DBInterface):
 
             for fk in fk_dict[tname]:
                 # Re-index to remove composite keys.
-                fk_col, fk_name = self._reindex_fk(
+                fk_col, fk_name = reindex_fk(
                     df_dict, tname, fk.src_columns, fk.ref_table, fk.ref_columns
                 )
 
@@ -160,12 +163,17 @@ class RemoteDBInterface(DBInterface):
 
             time_col = time_col_dict.get(tname)
             if time_col is not None:
+                if time_col not in df_dict[tname].columns:
+                    raise ValueError(
+                        f"Configured time column '{time_col}' not found in table '{tname}'."
+                    )
                 try:
                     df_dict[tname][time_col] = pd.to_datetime(df_dict[tname][time_col])
-                except pd.errors.OutOfBoundsDatetime:
-                    print(f"Out of bounds datetime in {tname}.{time_col}")
-                except Exception as e:
-                    print(f"Error converting {tname}.{time_col} to datetime: {e}")
+                except (ValueError, TypeError, pd.errors.OutOfBoundsDatetime) as e:
+                    warnings.warn(
+                        f"Could not convert {tname}.{time_col} to datetime: {e}",
+                        stacklevel=2,
+                    )
 
             table_dict[tname] = Table(
                 df=df_dict[tname],
@@ -177,25 +185,3 @@ class RemoteDBInterface(DBInterface):
         db = Database(table_dict)
 
         return db
-
-    def _reindex_fk(
-        self,
-        df_dict: dict[str, pd.DataFrame],
-        src_table: str,
-        src_columns: list[str],
-        ref_table: str,
-        ref_columns: list[str],
-    ):
-        fk_name = f"FK_{ref_table}_" + "_".join(src_columns)
-
-        df_src = df_dict[src_table][src_columns]
-        df_ref = df_dict[ref_table]
-
-        fk_col = df_src.merge(
-            df_ref,
-            how="left",
-            left_on=src_columns,
-            right_on=ref_columns,
-        )["__PK__"]
-
-        return fk_col, fk_name
