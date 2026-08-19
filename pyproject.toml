@@ -11,7 +11,7 @@ authors = [{ name = "Jakub Peleška", email = "jakub.peleska@fel.cvut.cz" }]
 readme = "README.md"
 license = { file = "LICENSE" }
 classifiers = ["License :: OSI Approved :: MIT License"]
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 keywords = []
 dependencies = [
     "pandas>=2.3.3",
@@ -35,37 +35,36 @@ torch = [
 
 
 [dependency-groups]
+
 cpu = [
-    "torch==2.8.0",
-    "torchvision==0.23.0",
-    "torchaudio==2.8.0",
+    "torch==2.9.1",
+    "torchvision==0.24.1",
+    "torchaudio==2.9.1",
+    "pyg-lib>=0.6.0",
+    "torch-scatter>=2.1.2",
+    "torch-sparse>=0.6.18",
     "pytorch-frame>=0.3.0",
     "torch-geometric>=2.7.0",
     "sentence-transformers>=4.0.1",
-]
-cu121 = [
-    "torch==2.1.2",
-    "torchvision==0.16.2",
-    "torchaudio==2.1.2",
-    "pytorch-frame>=0.2.5",
-    "torch-geometric==2.4.0",
-    "numpy==1.26.4",
-    "huggingface-hub==0.21.2",
-    "transformers==4.37.2",
-    "sentence-transformers==2.2.2",
 ]
 cu124 = [
     "torch==2.4.1",
     "torchvision==0.19.1",
     "torchaudio==2.4.1",
+    "pyg-lib>=0.4.0",
+    "torch-scatter>=2.1.2",
+    "torch-sparse>=0.6.18",
     "pytorch-frame>=0.2.5",
     "torch-geometric>=2.6.1",
     "sentence-transformers>=4.0.1",
 ]
 cu128 = [
-    "torch==2.8.0",
-    "torchvision==0.23.0",
-    "torchaudio==2.8.0",
+    "torch==2.9.1",
+    "torchvision==0.24.1",
+    "torchaudio==2.9.1",
+    "pyg-lib>=0.6.0",
+    "torch-scatter>=2.1.2",
+    "torch-sparse>=0.6.18",
     "pytorch-frame>=0.3.0",
     "torch-geometric>=2.7.0",
     "sentence-transformers>=4.0.1",
@@ -90,10 +89,13 @@ visualization = ["jinja2>=3.1.6", "pydot>=4.0.1"]
 
 [tool.uv]
 default-groups = ["dev", "cpu", "experiments", "visualization"]
+# Guarantee that the lock file contains wheels usable on Linux x86_64. Without
+# this, uv can pick a torch build whose local version sorts highest but only
+# ships wheels for another platform (e.g. torchvision "+d801a34" is win_arm64).
+required-environments = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
 conflicts = [
     [
         { group = "cpu" },
-        { group = "cu121" },
         { group = "cu124" },
         { group = "cu128" },
     ],
@@ -102,21 +104,33 @@ conflicts = [
 [tool.uv.sources]
 torch = [
     { index = "torch-cpu", group = "cpu" },
-    { index = "torch-cu121", group = "cu121" },
     { index = "torch-cu124", group = "cu124" },
     { index = "torch-cu128", group = "cu128" },
 ]
 torchvision = [
     { index = "torch-cpu", group = "cpu" },
-    { index = "torch-cu121", group = "cu121" },
     { index = "torch-cu124", group = "cu124" },
     { index = "torch-cu128", group = "cu128" },
 ]
 torchaudio = [
     { index = "torch-cpu", group = "cpu" },
-    { index = "torch-cu121", group = "cu121" },
     { index = "torch-cu124", group = "cu124" },
     { index = "torch-cu128", group = "cu128" },
+]
+pyg-lib = [
+    { index = "pyg-cpu", group = "cpu" },
+    { index = "pyg-cu124", group = "cu124" },
+    { index = "pyg-cu128", group = "cu128" },
+]
+torch-scatter = [
+    { index = "pyg-cpu", group = "cpu" },
+    { index = "pyg-cu124", group = "cu124" },
+    { index = "pyg-cu128", group = "cu128" },
+]
+torch-sparse = [
+    { index = "pyg-cpu", group = "cpu" },
+    { index = "pyg-cu124", group = "cu124" },
+    { index = "pyg-cu128", group = "cu128" },
 ]
 
 
@@ -125,10 +139,6 @@ name = "torch-cpu"
 url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
-[[tool.uv.index]]
-name = "torch-cu121"
-url = "https://download.pytorch.org/whl/cu121"
-explicit = true
 
 [[tool.uv.index]]
 name = "torch-cu124"
@@ -139,6 +149,29 @@ explicit = true
 [[tool.uv.index]]
 name = "torch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+
+# Flat (find-links) indexes of the compiled PyG extensions. The URL encodes the
+# torch version of the corresponding dependency group, so it must be updated
+# together with the torch pin.
+[[tool.uv.index]]
+name = "pyg-cpu"
+url = "https://data.pyg.org/whl/torch-2.9.1+cpu.html"
+format = "flat"
+explicit = true
+
+
+[[tool.uv.index]]
+name = "pyg-cu124"
+url = "https://data.pyg.org/whl/torch-2.4.1+cu124.html"
+format = "flat"
+explicit = true
+
+[[tool.uv.index]]
+name = "pyg-cu128"
+url = "https://data.pyg.org/whl/torch-2.9.1+cu128.html"
+format = "flat"
 explicit = true
 
 [project.urls]
@@ -155,7 +188,7 @@ markers = [
 
 [tool.ruff]
 line-length = 92
-target-version = "py310"
+target-version = "py312"
 extend-exclude = ["experiments", "notebooks", "scripts"]
 
 [tool.ruff.lint]

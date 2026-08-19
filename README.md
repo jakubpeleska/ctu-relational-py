@@ -105,7 +105,7 @@ ReDeLEx includes tools for:
 - Comparing RDL with traditional ML and propositionalization
 - Benchmarking across 70+ relational datasets from various domains
 
-For experimental results and performance benchmarks, see the [ECML PKDD 2025 paper](https://arxiv.org/abs/XXXX.XXXXX) _(coming soon)_.
+For experimental results and performance benchmarks, see the [ECML PKDD 2025 paper](https://arxiv.org/abs/2506.22199).
 
 ## ⚙️ Development
 
@@ -127,32 +127,38 @@ More info: [https://docs.astral.sh/uv/getting-started/installation/](https://doc
 
 ### Install dependencies
 
-CPU:
+Requires Python 3.12. Each command installs everything, including the compiled
+PyTorch Geometric extensions (`pyg-lib`, `torch-scatter`, `torch-sparse`).
+
+CPU (torch 2.9.1):
 
 ```bash
 uv sync
-uv pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-2.4.0+cpu.html
 ```
 
-CUDA 12.8:
+CUDA 12.8 (torch 2.9.1):
 
 ```bash
 uv sync --no-group cpu --group cu128
-uv pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-2.8.0+cu128.html
 ```
 
-CUDA 12.4 (Old CUDA env):
+CUDA 12.4 (old CUDA env, torch 2.4.1):
 
 ```bash
 uv sync --no-group cpu --group cu124
-uv pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-2.4.0+cu124.html
 ```
 
-CUDA 12.1 (RCI Setup):
+### Run the tests
 
 ```bash
-uv sync --no-group cpu --group cu121
-uv pip install pyg_lib==0.3.1 torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-2.1.2+cu121.html
+uv run pytest
+```
+
+Tests that download every CTU database and build every task are excluded by
+default; run them explicitly with:
+
+```bash
+uv run pytest -m needs_network
 ```
 
 ### Enable and run `pre-commit`
