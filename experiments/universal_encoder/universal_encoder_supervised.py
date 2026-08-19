@@ -32,7 +32,7 @@ from relbench.tasks import get_task
 
 sys.path.append(".")
 
-from redelex.nn.train.lightning import LightningEntityTaskWrapper
+from redelex.nn.train import LightningEntityTaskWrapper
 from redelex.tasks import mixins
 
 from experiments.universal_encoder.utils import (

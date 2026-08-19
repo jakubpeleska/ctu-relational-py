@@ -21,11 +21,8 @@ class EntityTaskMixin(BaseTask):
     entity_table: str
     target_col: str
     task_type: TaskType
-
-    # TODO: add proper default metrics
-    @property
-    def metrics(self) -> list[Callable[[NDArray, NDArray], float]]:
-        return []
+    metrics: list[Callable[[NDArray, NDArray], float]]
+    num_classes: Optional[int] = None
 
     def filter_dangling_entities(self, table: Table) -> Table:
         db = self.dataset.get_db()

@@ -176,7 +176,7 @@ class LightningPretrainedModel(L.LightningModule):
         self.task = get_task(dataset_name, task_name)
         self.loss_fn = get_loss(self.task.task_type)
         self.val_metrics, self.tune_metric, self.higher_is_better = get_metrics(
-            self.task.task_type
+            self.task.task_type, num_classes=getattr(self.task, "num_classes", None)
         )
         self.test_metrics = copy.deepcopy(self.val_metrics)
         self.optimizer = optimizer

@@ -1,4 +1,4 @@
-from typing import Callable
+from typing import Callable, Optional
 
 import pandas as pd
 from relbench.base import Database, Table, TaskType
@@ -13,11 +13,13 @@ class ImputeEntityTaskMixin(ModifyDBTaskMixin, EntityTaskMixin):
     Classification targets are label-encoded over the sorted unique values of
     the target column. Rows with a missing target value are encoded with the
     sentinel label ``-1`` and are not dropped; downstream consumers must mask
-    or filter them.
+    or filter them. The sentinel is not a class, so it is not counted by
+    :attr:`num_classes`.
 
     Attributes:
         removed_entity_cols: list of entity columns to be removed from the
             entity table.
+        num_classes: Number of target classes of a classification task.
         Other attributes are inherited from ModifyDBTaskMixin and EntityTaskMixin.
     """
 
@@ -29,6 +31,28 @@ class ImputeEntityTaskMixin(ModifyDBTaskMixin, EntityTaskMixin):
 
     _target_mapping: Callable[[pd.Series], pd.Series] = None
     _target_dtype: type = None
+    _target_values: Optional[pd.Index] = None
+
+    @property
+    def num_classes(self) -> Optional[int]:
+        r"""Number of target classes, or None for non-classification tasks.
+
+        The classes are the sorted unique non-missing values of the target
+        column, i.e. the same encoding the task tables use.
+        """
+        if self.task_type not in [
+            TaskType.BINARY_CLASSIFICATION,
+            TaskType.MULTICLASS_CLASSIFICATION,
+        ]:
+            return None
+
+        if self._target_values is None:
+            # Use the same database as `_get_table` does by default, so the
+            # classes match the ones the task tables are built with.
+            db = self.dataset.get_db(upto_test_timestamp=False)
+            self._init_target_mapping(db.table_dict[self.entity_table].df)
+
+        return len(self._target_values)
 
     def _init_target_mapping(self, df: pd.DataFrame) -> None:
         if self.task_type in [
@@ -53,8 +77,10 @@ class ImputeEntityTaskMixin(ModifyDBTaskMixin, EntityTaskMixin):
                     return target_values.get_loc(x)
 
             self._target_mapping = target_map
+            self._target_values = target_values
         else:
             self._target_mapping = lambda x: x
+            self._target_values = None
 
         if self.task_type in [TaskType.BINARY_CLASSIFICATION, TaskType.REGRESSION]:
             self._target_dtype = float

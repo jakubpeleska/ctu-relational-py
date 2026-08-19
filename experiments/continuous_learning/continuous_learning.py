@@ -34,7 +34,7 @@ from relbench.tasks import get_task, get_task_names
 import redelex.tasks.mixins as task_mixin
 from redelex.data import make_pkey_fkey_graph
 from redelex.loaders import ComposedLoader
-from redelex.nn.train.lightning import LightningEntityTaskWrapper, SaveModelCallback
+from redelex.nn.train import LightningEntityTaskWrapper, SaveModelCallback
 
 from experiments.continuous_learning.continuous_task import ContinuousWrapper
 
