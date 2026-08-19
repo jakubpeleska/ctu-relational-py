@@ -27,9 +27,10 @@ CTUDatabaseName = Literal[
 
 
 class CTUDataset(DBDataset):
-    # To be set by subclass if available.
-    val_timestamp = pd.Timestamp.max.date()
-    test_timestamp = pd.Timestamp.max.date()
+    # To be set by subclass if available. Must be pd.Timestamp: relbench
+    # compares these against datetime64 columns, which rejects datetime.date.
+    val_timestamp = pd.Timestamp.max.floor("D")
+    test_timestamp = pd.Timestamp.max.floor("D")
 
     def __init__(
         self,
