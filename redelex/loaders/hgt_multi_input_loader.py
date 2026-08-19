@@ -7,6 +7,12 @@ from torch_geometric.typing import NodeType
 
 
 class HGTMultiInputLoader:
+    r"""Round-robins one :class:`HGTLoader` per input node type.
+
+    Iteration yields ``(node_type, batch)`` pairs in a shuffled order that is
+    proportional to the loaders' lengths.
+    """
+
     def __init__(
         self,
         data: HeteroData,
@@ -16,28 +22,30 @@ class HGTMultiInputLoader:
         **kwargs,
     ):
         self.data = data
-        self.current_index = 0
         self.input_nodes = (
             [node[0] for node in input_nodes]
             if isinstance(input_nodes[0], tuple)
             else input_nodes
         )
         self.loaders = {
-            input_node: HGTLoader(
+            node_name: HGTLoader(
                 data,
                 num_samples=num_samples,
                 input_nodes=input_node,
                 transform=transform,
                 **kwargs,
             )
-            for input_node in input_nodes
+            for node_name, input_node in zip(self.input_nodes, input_nodes, strict=True)
         }
         self.loaders_len = [len(loader) for loader in self.loaders.values()]
         self.total_len = sum(self.loaders_len)
 
     def __iter__(self):
         self.idx = 0
-        _rnd_cat = torch.repeat_interleave(torch.tensor(self.loaders_len))
+        loader_indices = torch.arange(len(self.loaders_len))
+        _rnd_cat = torch.repeat_interleave(
+            loader_indices, repeats=torch.tensor(self.loaders_len)
+        )
         _rnd_idx = torch.randperm(_rnd_cat.shape[0])
         self.rnd_loader_idx = _rnd_cat[_rnd_idx].long().tolist()
         self.loader_iter = [iter(self.loaders[e]) for e in self.input_nodes]
@@ -48,7 +56,7 @@ class HGTMultiInputLoader:
             raise StopIteration
         _loader_idx = self.rnd_loader_idx[self.idx]
         self.idx += 1
-        return next(self.loader_iter[_loader_idx])
+        return self.input_nodes[_loader_idx], next(self.loader_iter[_loader_idx])
 
     def __len__(self):
         return self.total_len
