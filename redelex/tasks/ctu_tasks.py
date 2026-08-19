@@ -11,7 +11,9 @@ class CTUEntityTaskTemporal(ImputeEntityTemporalTask):
     entity_col = "__PK__"
 
 
-# TODO: implement link prediction tasks, currently they are placeholders
+# TODO: implement link prediction tasks. The CTULinkTask subclasses below are
+# placeholders: they are intentionally NOT registered and NOT exported, and
+# will fail if instantiated.
 class CTULinkTask(ImputeEntityStaticTask):
     pass
 
@@ -480,7 +482,6 @@ class SAPSalesTemporalTask(CTUEntityTaskTemporal):
 # TODO: fix link prediction tasks
 class SatelliteOriginalTask(CTULinkTask):
     entity_table = "tm"
-    link_table = "fault"
     task_type = TaskType.LINK_PREDICTION
 
 
@@ -511,7 +512,6 @@ class SFScoresTemporalTask(CTUEntityTaskTemporal):
 # TODO: fix link prediction tasks
 class ShakespeareOriginalTask(CTULinkTask):
     entity_table = "paragraphs"
-    link_table = "characters"
     task_type = TaskType.LINK_PREDICTION
 
 
@@ -661,17 +661,14 @@ __all__ = [
     "CDESchoolsOriginalTask", 
     "ChessOriginalTask", 
     "ClassicModelsOriginalTask", "ClassicModelsTemporalTask",
-    "CORAOriginalTask", 
-    "CountriesOriginalTask", 
-    "CraftBeerOriginalTask", 
-    "CreditOriginalTask", 
+    "CORAOriginalTask",
+    "CountriesOriginalTask",
+    "CraftBeerOriginalTask",
     "DallasOriginalTask", "DallasTemporalTask",
-    "DCGOriginalTask", 
+    "DCGOriginalTask",
     "DiabetesOriginalTask",
-    "DunurOriginalTask", 
-    "EltiOriginalTask", 
     "EmployeeOriginalTask", "EmployeeTemporalTask",
-    "ErgastF1OriginalTask", "ErgastF1TemporalTask",
+    "ErgastF1OriginalTask",
     "ExpendituresOriginalTask", 
     "FinancialOriginalTask", "FinancialTemporalTask",
     "FNHKOriginalTask", "FNHKTemporalTask",
@@ -680,39 +677,35 @@ __all__ = [
     "GenesOriginalTask", 
     "GOSalesOriginalTask", "GOSalesTemporalTask",
     "GrantsOriginalTask", "GrantsTemporalTask",
-    "HepatitisOriginalTask", 
-    "HockeyOriginalTask", "HockeyTemporalTask",
-    "IMDbOriginalTask", "IMDbTemporalTask",
+    "HepatitisOriginalTask",
+    "HockeyOriginalTask",
+    "IMDbOriginalTask",
     "LahmanOriginalTask", "LahmanTemporalTask",
     "LegalActsOriginalTask", "LegalActsTemporalTask",
-    "MeshOriginalTask", 
-    "MondialOriginalTask", 
-    "MooneyOriginalTask", 
-    "MovieLensOriginalTask", 
-    "MuskLargeOriginalTask", 
-    "MuskSmallOriginalTask", 
+    "MeshOriginalTask",
+    "MondialOriginalTask",
+    "MovieLensOriginalTask",
+    "MuskLargeOriginalTask",
+    "MuskSmallOriginalTask",
     "MutagenesisOriginalTask",
-    "NCAAOriginalTask", "NCAATemporalTask",
+    "NCAAOriginalTask",
     "NorthwindOriginalTask", "NorthwindTemporalTask",
     "PimaOriginalTask", 
     "PremiereLeagueOriginalTask", "PremiereLeagueTemporalTask",
     "RestbaseOriginalTask",
     "SakilaOriginalTask", "SakilaTemporalTask",
-    "SalesOriginalTask", 
-    "SameGenOriginalTask", 
+    "SalesOriginalTask",
     "SAPOriginalTask", "SAPSalesTask", "SAPSalesTemporalTask",
-    "SatelliteOriginalTask", 
     "SeznamOriginalTask", "SeznamTemporalTask",
     "SFScoresOriginalTask", "SFScoresTemporalTask",
-    "ShakespeareOriginalTask", 
     "StatsOriginalTask", "StatsTemporalTask",
-    "StudentLoanOriginalTask", 
-    "ThrombosisOriginalTask", "ThrombosisTemporalTask",
+    "StudentLoanOriginalTask",
+    "ThrombosisOriginalTask",
     "ToxicologyOriginalTask",
-    "TPCCOriginalTask", 
-    "TPCDOriginalTask", "TPCDTemporalTask",
+    "TPCCOriginalTask",
+    "TPCDOriginalTask",
     "TPCDSOriginalTask", "TPCDSTemporalTask",
-    "TPCHOriginalTask", "TPCHTemporalTask",
+    "TPCHOriginalTask",
     "TriazineOriginalTask",
     "UWCSEOriginalTask", 
     "VisualGenomeOriginalTask", 

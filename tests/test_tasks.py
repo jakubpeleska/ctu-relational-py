@@ -95,12 +95,20 @@ def test_static_split_partition(synthetic_dataset):
     assert sorted(splits["train"]) == sorted(again)
 
 
-def test_make_modified_db_does_not_mutate_cached_db(synthetic_dataset):
-    """Regression: inplace=True with db=None dropped the target column from the
-    lru_cached database, breaking all later get_table calls."""
+def test_make_modified_db_rejects_inplace_without_db(synthetic_dataset):
+    """The dataset's database is lru_cached, so modifying it in place would
+    corrupt every later get_table call. That combination is rejected."""
     task = UserStaticBinaryTask(synthetic_dataset)
 
-    modified = task.make_modified_db(inplace=True)
+    with pytest.raises(ValueError, match="in place"):
+        task.make_modified_db(inplace=True)
+
+
+def test_make_modified_db_does_not_mutate_cached_db(synthetic_dataset):
+    """The default (copying) path must leave the cached database untouched."""
+    task = UserStaticBinaryTask(synthetic_dataset)
+
+    modified = task.make_modified_db()
     assert "target_cat" not in modified.table_dict["users"].df.columns
 
     cached = synthetic_dataset.get_db(upto_test_timestamp=False)
@@ -109,6 +117,17 @@ def test_make_modified_db_does_not_mutate_cached_db(synthetic_dataset):
     # And the task still works afterwards.
     table = task.get_table("train", mask_input_cols=False)
     assert "target_cat" in table.df.columns
+
+
+def test_make_modified_db_inplace_with_explicit_db(synthetic_dataset):
+    """An explicitly passed database may be modified in place."""
+    task = UserStaticBinaryTask(synthetic_dataset)
+    db = task.make_modified_db()  # a private copy, target already dropped
+    db.table_dict["users"].df["target_cat"] = "yes"
+
+    same = task.make_modified_db(db=db, inplace=True)
+    assert same is db
+    assert "target_cat" not in db.table_dict["users"].df.columns
 
 
 def test_make_modified_db_explicit_db_inplace(synthetic_dataset):

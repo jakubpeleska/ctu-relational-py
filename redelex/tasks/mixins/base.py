@@ -85,32 +85,30 @@ class BaseTask:
             mask_input_cols: If True, keep only the input columns in the table. If
                 None, mask the input columns only for the test split. This helps
                 prevent data leakage.
-            db: The database to use. If None, use the full database.
+            db: The database to use. If None, use the full database. When given,
+                the parquet cache is bypassed so the table is always built from
+                the provided database.
 
         Returns:
             The task table for the split.
 
-        The table is cached in memory.
+        When ``cache_dir`` is set, the table is cached as a parquet file.
         """
 
         if mask_input_cols is None:
             mask_input_cols = split == "test"
 
         table_path = f"{self.cache_dir}/{split}.parquet"
-        if self.cache_dir and Path(table_path).exists():
+        if self.cache_dir and db is None and Path(table_path).exists():
             table = Table.load(table_path)
         else:
             print(f"Making task table for {split} split from scratch...")
-            print(
-                "(You can also use `get_task(..., download=True)` "
-                "for tasks prepared by the RelBench team.)"
-            )
             tic = time.time()
             table = self._get_table(split, db=db)
             toc = time.time()
             print(f"Done in {toc - tic:.2f} seconds.")
 
-            if self.cache_dir:
+            if self.cache_dir and db is None:
                 table.save(table_path)
 
         if mask_input_cols:
@@ -120,8 +118,9 @@ class BaseTask:
 
     def _mask_input_cols(self, table: Table) -> Table:
         input_cols = [
-            table.time_col,
-            *table.fkey_col_to_pkey_table.keys(),
+            col
+            for col in (table.time_col, *table.fkey_col_to_pkey_table.keys())
+            if col is not None
         ]
         return Table(
             df=table.df[input_cols],

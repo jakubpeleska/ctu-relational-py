@@ -24,19 +24,15 @@ from .ctu_tasks import (
     CORAOriginalTask,
     CountriesOriginalTask,
     CraftBeerOriginalTask,
-    CreditOriginalTask,
     CTUEntityTask,
     CTUEntityTaskTemporal,
     DallasOriginalTask,
     DallasTemporalTask,
     DCGOriginalTask,
     DiabetesOriginalTask,
-    DunurOriginalTask,
-    EltiOriginalTask,
     EmployeeOriginalTask,
     EmployeeTemporalTask,
     ErgastF1OriginalTask,
-    ErgastF1TemporalTask,
     ExpendituresOriginalTask,
     FinancialOriginalTask,
     FinancialTemporalTask,
@@ -53,22 +49,18 @@ from .ctu_tasks import (
     GrantsTemporalTask,
     HepatitisOriginalTask,
     HockeyOriginalTask,
-    HockeyTemporalTask,
     IMDbOriginalTask,
-    IMDbTemporalTask,
     LahmanOriginalTask,
     LahmanTemporalTask,
     LegalActsOriginalTask,
     LegalActsTemporalTask,
     MeshOriginalTask,
     MondialOriginalTask,
-    MooneyOriginalTask,
     MovieLensOriginalTask,
     MuskLargeOriginalTask,
     MuskSmallOriginalTask,
     MutagenesisOriginalTask,
     NCAAOriginalTask,
-    NCAATemporalTask,
     NorthwindOriginalTask,
     NorthwindTemporalTask,
     PimaOriginalTask,
@@ -78,29 +70,23 @@ from .ctu_tasks import (
     SakilaOriginalTask,
     SakilaTemporalTask,
     SalesOriginalTask,
-    SameGenOriginalTask,
     SAPOriginalTask,
     SAPSalesTask,
     SAPSalesTemporalTask,
-    SatelliteOriginalTask,
     SeznamOriginalTask,
     SeznamTemporalTask,
     SFScoresOriginalTask,
     SFScoresTemporalTask,
-    ShakespeareOriginalTask,
     StatsOriginalTask,
     StatsTemporalTask,
     StudentLoanOriginalTask,
     ThrombosisOriginalTask,
-    ThrombosisTemporalTask,
     ToxicologyOriginalTask,
     TPCCOriginalTask,
     TPCDOriginalTask,
     TPCDSOriginalTask,
     TPCDSTemporalTask,
-    TPCDTemporalTask,
     TPCHOriginalTask,
-    TPCHTemporalTask,
     TriazineOriginalTask,
     UWCSEOriginalTask,
     VisualGenomeOriginalTask,
@@ -160,15 +146,15 @@ register_task("ctu-classicmodels", "classicmodels-temporal", ClassicModelsTempor
 register_task("ctu-cora", "cora-original", CORAOriginalTask)
 register_task("ctu-countries", "countries-original", CountriesOriginalTask)
 register_task("ctu-craftbeer", "craftbeer-original", CraftBeerOriginalTask)
-register_task("ctu-credit", "credit-original", CreditOriginalTask)
+# Link prediction tasks (Credit, Dunur, Elti, Mooney, SameGen, Satellite,
+# Shakespeare) are not implemented yet and are not registered; see the
+# CTULinkTask placeholders in ctu_tasks.py.
 
 register_task("ctu-dallas", "dallas-original", DallasOriginalTask)
 register_task("ctu-dallas", "dallas-temporal", DallasTemporalTask)
 
 register_task("ctu-dcg", "dcg-original", DCGOriginalTask)
 register_task("ctu-diabetes", "diabetes-original", DiabetesOriginalTask)
-register_task("ctu-dunur", "dunur-original", DunurOriginalTask)
-register_task("ctu-elti", "elti-original", EltiOriginalTask)
 
 register_task("ctu-employee", "employee-original", EmployeeOriginalTask)
 register_task("ctu-employee", "employee-temporal", EmployeeTemporalTask)
@@ -214,7 +200,6 @@ register_task("ctu-legalacts", "legalacts-temporal", LegalActsTemporalTask)
 
 register_task("ctu-mesh", "mesh-original", MeshOriginalTask)
 register_task("ctu-mondial", "mondial-original", MondialOriginalTask)
-register_task("ctu-mooney", "mooney-original", MooneyOriginalTask)
 register_task("ctu-movielens", "movielens-original", MovieLensOriginalTask)
 register_task("ctu-musklarge", "musklarge-original", MuskLargeOriginalTask)
 register_task("ctu-musksmall", "musksmall-original", MuskSmallOriginalTask)
@@ -237,21 +222,16 @@ register_task("ctu-sakila", "sakila-original", SakilaOriginalTask)
 register_task("ctu-sakila", "sakila-temporal", SakilaTemporalTask)
 
 register_task("ctu-sales", "sales-original", SalesOriginalTask)
-register_task("ctu-samegen", "samegen-original", SameGenOriginalTask)
 
 register_task("ctu-sap", "sap-original", SAPOriginalTask)
 register_task("ctu-sap", "sap-sales", SAPSalesTask)
 register_task("ctu-sap", "sap-sales-temporal", SAPSalesTemporalTask)
-
-register_task("ctu-satellite", "satellite-original", SatelliteOriginalTask)
 
 register_task("ctu-seznam", "seznam-original", SeznamOriginalTask)
 register_task("ctu-seznam", "seznam-temporal", SeznamTemporalTask)
 
 register_task("ctu-sfscores", "sfscores-original", SFScoresOriginalTask)
 register_task("ctu-sfscores", "sfscores-temporal", SFScoresTemporalTask)
-
-register_task("ctu-shakespeare", "shakespeare-original", ShakespeareOriginalTask)
 
 register_task("ctu-stats", "stats-original", StatsOriginalTask)
 register_task("ctu-stats", "stats-temporal", StatsTemporalTask)
@@ -300,25 +280,25 @@ __all__ = [
     "BiodegradabilityOriginalTask", "BupaOriginalTask", "CarcinogenesisOriginalTask",
     "CDESchoolsOriginalTask", "ChessOriginalTask", "ClassicModelsOriginalTask",
     "ClassicModelsTemporalTask", "CORAOriginalTask", "CountriesOriginalTask",
-    "CraftBeerOriginalTask", "CreditOriginalTask", "DallasOriginalTask", "DallasTemporalTask",
-    "DCGOriginalTask", "DiabetesOriginalTask", "DunurOriginalTask", "EltiOriginalTask",
-    "EmployeeOriginalTask", "EmployeeTemporalTask", "ErgastF1OriginalTask", "ErgastF1TemporalTask",
+    "CraftBeerOriginalTask", "DallasOriginalTask", "DallasTemporalTask",
+    "DCGOriginalTask", "DiabetesOriginalTask",
+    "EmployeeOriginalTask", "EmployeeTemporalTask", "ErgastF1OriginalTask",
     "ExpendituresOriginalTask", "FinancialOriginalTask", "FinancialTemporalTask", "FNHKOriginalTask",
     "FNHKTemporalTask", "FTPOriginalTask", "FTPTemporalTask", "GeneeaOriginalTask",
     "GeneeaTemporalTask", "GenesOriginalTask", "GOSalesOriginalTask", "GOSalesTemporalTask",
     "GrantsOriginalTask", "GrantsTemporalTask", "HepatitisOriginalTask", "HockeyOriginalTask",
-    "HockeyTemporalTask", "IMDbOriginalTask", "IMDbTemporalTask", "LahmanOriginalTask",
+    "IMDbOriginalTask", "LahmanOriginalTask",
     "LahmanTemporalTask", "LegalActsOriginalTask", "LegalActsTemporalTask", "MeshOriginalTask",
-    "MondialOriginalTask", "MooneyOriginalTask", "MovieLensOriginalTask", "MuskLargeOriginalTask",
-    "MuskSmallOriginalTask", "MutagenesisOriginalTask", "NCAAOriginalTask", "NCAATemporalTask",
+    "MondialOriginalTask", "MovieLensOriginalTask", "MuskLargeOriginalTask",
+    "MuskSmallOriginalTask", "MutagenesisOriginalTask", "NCAAOriginalTask",
     "NorthwindOriginalTask", "NorthwindTemporalTask", "PimaOriginalTask", "PremiereLeagueOriginalTask",
     "PremiereLeagueTemporalTask", "RestbaseOriginalTask", "SakilaOriginalTask", "SakilaTemporalTask",
-    "SalesOriginalTask", "SameGenOriginalTask", "SAPOriginalTask", "SAPSalesTask", "SAPSalesTemporalTask",
-    "SatelliteOriginalTask", "SeznamOriginalTask", "SeznamTemporalTask", "SFScoresOriginalTask",
-    "SFScoresTemporalTask", "ShakespeareOriginalTask", "StatsOriginalTask", "StatsTemporalTask",
-    "StudentLoanOriginalTask", "ThrombosisOriginalTask", "ThrombosisTemporalTask",
-    "ToxicologyOriginalTask", "TPCCOriginalTask", "TPCDOriginalTask", "TPCDTemporalTask",
-    "TPCDSOriginalTask", "TPCDSTemporalTask", "TPCHOriginalTask", "TPCHTemporalTask",
+    "SalesOriginalTask", "SAPOriginalTask", "SAPSalesTask", "SAPSalesTemporalTask",
+    "SeznamOriginalTask", "SeznamTemporalTask", "SFScoresOriginalTask",
+    "SFScoresTemporalTask", "StatsOriginalTask", "StatsTemporalTask",
+    "StudentLoanOriginalTask", "ThrombosisOriginalTask",
+    "ToxicologyOriginalTask", "TPCCOriginalTask", "TPCDOriginalTask",
+    "TPCDSOriginalTask", "TPCDSTemporalTask", "TPCHOriginalTask",
     "TriazineOriginalTask", "UWCSEOriginalTask", "VisualGenomeOriginalTask", "VOCOriginalTask",
     "VOCTemporalTask", "WalmartOriginalTask", "WalmartTemporalTask", "WebKPOriginalTask", "WorldOriginalTask"
 ]

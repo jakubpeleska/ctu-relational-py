@@ -37,6 +37,9 @@ class ModifyDBTaskMixin(BaseTask):
                 modified copy of the database.
         """
 
+        if db is None and inplace:
+            raise ValueError("Cannot modify database in place if no database is provided.")
+
         if db is None:
             db = self.dataset.get_db(upto_test_timestamp=False)
 
