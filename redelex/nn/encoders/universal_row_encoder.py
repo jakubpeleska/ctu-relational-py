@@ -239,13 +239,9 @@ class UniversalCategoricalEncoder(UniversalStypeEncoder):
             )  # [num_cols]
 
             lengths = feat.offset.diff()  # [num_rows * num_cols]
-            col_lengths = lengths.view(feat.num_rows, feat.num_cols).sum(
-                dim=0
-            )  # [num_cols]
+            bag_shifts = bag_shifts.repeat(feat.num_rows)  # [num_rows * num_cols]
 
-            indices_shifts = torch.repeat_interleave(
-                bag_shifts, col_lengths
-            )  # [total_elems]
+            indices_shifts = torch.repeat_interleave(bag_shifts, lengths)  # [total_elems]
 
             adjusted_indices = indices + indices_shifts
 
@@ -328,6 +324,7 @@ class UniversalTimestampEncoder(UniversalStypeEncoder):
     def reset_parameters(self) -> None:
         torch.nn.init.normal_(self.feat_weight, std=0.01)
         torch.nn.init.zeros_(self.feat_bias)
+        self.stats_transform.reset_parameters()
 
     def fill_na(
         self, feat: torch.Tensor, stats: Optional[dict[TensorStatType, torch.Tensor]] = None
@@ -346,7 +343,7 @@ class UniversalTimestampEncoder(UniversalStypeEncoder):
         return feat
 
     def encode_features(
-        self, feat: torch.Tensor, stats: dict[TensorStatType, torch.Tensor]
+        self, feat: torch.Tensor, stats: Optional[dict[TensorStatType, torch.Tensor]] = None
     ) -> torch.Tensor:
         feat = feat.to(torch.float32)
         if stats is None:
@@ -396,16 +393,24 @@ class UniversalEmbeddingEncoder(UniversalStypeEncoder):
         self.text_transform.reset_parameters()
 
     def fill_na(
-        self, feat: MultiEmbeddingTensor, stats: dict[TensorStatType, torch.Tensor]
+        self,
+        feat: MultiEmbeddingTensor,
+        stats: Optional[dict[TensorStatType, torch.Tensor]] = None,
     ) -> torch.Tensor:
         return feat
 
     def encode_features(
-        self, feat: MultiEmbeddingTensor, stats: dict[TensorStatType, torch.Tensor]
+        self,
+        feat: MultiEmbeddingTensor,
+        stats: Optional[dict[TensorStatType, torch.Tensor]] = None,
     ) -> torch.Tensor:
-        # feat: MultiEmbeddingTensor [num_rows, num_cols, embed_dim]
-        feat_vals = feat.values.view(feat.num_rows, feat.num_cols, -1)
-        x: torch.Tensor = self.text_transform(feat_vals)  # [total_elems, data_channels]
+        # feat: MultiEmbeddingTensor [num_rows, num_cols, embed_dim].
+        # All embedding columns must share the same dimensionality for the
+        # shared linear transform below.
+        feat_vals = feat.values.view(
+            feat.num_rows, feat.num_cols, -1
+        )  # [num_rows, num_cols, embed_dim]
+        x: torch.Tensor = self.text_transform(feat_vals)
         x = x.view(feat.num_rows, feat.num_cols, self.data_channels)
         return x
 
@@ -422,13 +427,20 @@ class TransformerEncoderLayer(torch.nn.Module):
         super().__init__()
         self.self_attn = torch.nn.MultiheadAttention(channels, num_heads, batch_first=True)
         if activation == "relu":
-            self.activation_cls = torch.nn.ReLU
+            activation_module = torch.nn.ReLU()
         elif activation == "gelu":
-            self.activation_cls = torch.nn.GELU
+            activation_module = torch.nn.GELU()
+        elif isinstance(activation, torch.nn.Module):
+            activation_module = activation
+        else:
+            raise ValueError(
+                f"Unsupported activation {activation!r}; expected 'relu', 'gelu' "
+                "or a torch.nn.Module instance."
+            )
 
         self.ffn = torch.nn.Sequential(
             torch.nn.Linear(channels, ff_channels),
-            self.activation_cls(),
+            activation_module,
             torch.nn.Dropout(dropout),
             torch.nn.Linear(ff_channels, channels),
         )
@@ -437,8 +449,6 @@ class TransformerEncoderLayer(torch.nn.Module):
         self.norm2 = torch.nn.LayerNorm(channels)
         self.dropout1 = torch.nn.Dropout(dropout)
         self.dropout2 = torch.nn.Dropout(dropout)
-
-        self.activation = F.relu
 
     def reset_parameters(self):
         self.self_attn._reset_parameters()
