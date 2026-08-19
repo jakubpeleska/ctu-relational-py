@@ -11,12 +11,15 @@ from .helpers import (
     NAN_TARGET_CAT_ROWS,
     NAN_TARGET_NUM_ROWS,
     UserStaticBinaryTask,
+    UserStaticMulticlassTask,
     UserStaticRegressionTask,
     UserTemporalBinaryTask,
 )
 
 
-class UserStaticMulticlassTask(ImputeEntityStaticTask):
+class UserCatAsMulticlassTask(ImputeEntityStaticTask):
+    """Multiclass task over the two-category target, to check label dtypes."""
+
     entity_col = "__PK__"
     entity_table = "users"
     target_col = "target_cat"
@@ -56,7 +59,7 @@ def test_static_binary_nan_target_sentinel(synthetic_dataset):
 
 
 def test_static_multiclass_int_labels(synthetic_dataset):
-    task = UserStaticMulticlassTask(synthetic_dataset)
+    task = UserCatAsMulticlassTask(synthetic_dataset)
     df = _all_split_frames(task)
 
     assert pd.api.types.is_integer_dtype(df["target_cat"])
@@ -70,6 +73,37 @@ def test_static_regression_nan_preserved(synthetic_dataset):
     nan_rows = df[df["__PK__"].isin(NAN_TARGET_NUM_ROWS)]
     assert nan_rows["target_num"].isna().all()
     assert df[~df["__PK__"].isin(NAN_TARGET_NUM_ROWS)]["target_num"].notna().all()
+
+
+def test_num_classes_inferred_from_target(synthetic_dataset):
+    """num_classes comes from the target column, without building any table."""
+    assert UserStaticBinaryTask(synthetic_dataset).num_classes == 2
+    # Not hard-coded: this target has three categories.
+    assert UserStaticMulticlassTask(synthetic_dataset).num_classes == 3
+    # Regression has no classes.
+    assert UserStaticRegressionTask(synthetic_dataset).num_classes is None
+
+
+def test_num_classes_excludes_missing_sentinel(synthetic_dataset):
+    """The -1 label used for missing targets is not a class."""
+    task = UserStaticMulticlassTask(synthetic_dataset)
+    labels = _all_split_frames(task)["target_multi"]
+
+    assert -1 in set(labels)  # the synthetic target does contain NaNs
+    assert set(labels) - {-1} == {0, 1, 2}
+    assert task.num_classes == 3
+
+
+def test_num_classes_matches_table_labels(synthetic_dataset):
+    """Reading num_classes first must not change the label encoding."""
+    eager = UserStaticMulticlassTask(synthetic_dataset)
+    assert eager.num_classes == 3
+    eager_labels = _all_split_frames(eager)["target_multi"].tolist()
+
+    lazy = UserStaticMulticlassTask(synthetic_dataset)
+    lazy_labels = _all_split_frames(lazy)["target_multi"].tolist()
+
+    assert eager_labels == lazy_labels
 
 
 def test_binary_task_validates_category_count(synthetic_dataset):

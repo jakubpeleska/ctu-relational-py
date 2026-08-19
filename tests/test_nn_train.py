@@ -4,8 +4,18 @@ import pytest
 import torch
 from relbench.base import TaskType
 
-from redelex.nn.train.lightning import SaveModelCallback
-from redelex.nn.train.utils import get_loss, get_metrics
+from redelex.nn.train import (
+    LightningEntityTaskWrapper,
+    SaveModelCallback,
+    get_loss,
+    get_metrics,
+)
+
+from .helpers import (
+    UserStaticBinaryTask,
+    UserStaticMulticlassTask,
+    UserStaticRegressionTask,
+)
 
 
 def test_get_loss_mapping():
@@ -39,6 +49,63 @@ def test_get_metrics_multiclass_requires_num_classes():
     for metric in metrics.values():
         metric.update(preds, target)
         assert torch.isfinite(metric.compute())
+
+
+def test_wrapper_infers_num_classes_from_task(synthetic_dataset):
+    """Regression: building the wrapper for a multiclass task used to require
+    the caller to pass num_classes, and crashed in torchmetrics without it."""
+    task = UserStaticMulticlassTask(synthetic_dataset)
+    model = torch.nn.Linear(4, task.num_classes)
+
+    wrapper = LightningEntityTaskWrapper(
+        model=model,
+        optimizer=torch.optim.Adam(model.parameters()),
+        task=task,
+    )
+
+    assert not hasattr(wrapper, "num_classes")
+    assert wrapper.tune_metric == "macro_roc_auc"
+    assert wrapper.higher_is_better is True
+
+    # The metrics were built for three classes, so three-class inputs work.
+    preds = torch.randn(6, 3).softmax(dim=1)
+    target = torch.tensor([0, 1, 2, 0, 1, 2])
+    for metric in wrapper.val_metrics.values():
+        metric.update(preds, target)
+        assert torch.isfinite(metric.compute())
+
+
+def test_wrapper_binary_and_regression_tasks(synthetic_dataset):
+    for task_cls, tune_metric, higher in [
+        (UserStaticBinaryTask, "roc_auc", True),
+        (UserStaticRegressionTask, "mae", False),
+    ]:
+        task = task_cls(synthetic_dataset)
+        model = torch.nn.Linear(4, 1)
+        wrapper = LightningEntityTaskWrapper(
+            model=model,
+            optimizer=torch.optim.Adam(model.parameters()),
+            task=task,
+        )
+        assert wrapper.tune_metric == tune_metric
+        assert wrapper.higher_is_better is higher
+
+
+def test_wrapper_rejects_multiclass_task_without_num_classes(synthetic_dataset):
+    """A task that cannot report its class count must fail with a clear error."""
+    task = UserStaticMulticlassTask(synthetic_dataset)
+    model = torch.nn.Linear(4, 3)
+
+    class NoNumClassesTask:
+        task_type = TaskType.MULTICLASS_CLASSIFICATION
+        entity_table = task.entity_table
+
+    with pytest.raises(ValueError, match="num_classes"):
+        LightningEntityTaskWrapper(
+            model=model,
+            optimizer=torch.optim.Adam(model.parameters()),
+            task=NoNumClassesTask(),
+        )
 
 
 def _module(higher_is_better=True):

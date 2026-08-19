@@ -153,6 +153,10 @@ def make_users_visits_db() -> Database:
     reg_dates = pd.date_range("2019-01-01", periods=N_USERS, freq="MS")
     target_cat = pd.Series(["yes", "no"] * (N_USERS // 2), dtype=object)
     target_cat.iloc[NAN_TARGET_CAT_ROWS] = np.nan
+    # Three classes, so tests can tell an inferred class count from a hardcoded one.
+    target_multi = pd.Series(["low", "mid", "high"] * (N_USERS // 3 + 1), dtype=object)
+    target_multi = target_multi.iloc[:N_USERS].reset_index(drop=True)
+    target_multi.iloc[NAN_TARGET_CAT_ROWS] = np.nan
     target_num = pd.Series(np.linspace(0.0, 9.5, N_USERS))
     target_num.iloc[NAN_TARGET_NUM_ROWS] = np.nan
 
@@ -161,6 +165,7 @@ def make_users_visits_db() -> Database:
             "__PK__": np.arange(N_USERS),
             "reg_date": reg_dates,
             "target_cat": target_cat,
+            "target_multi": target_multi,
             "target_num": target_num,
             "age": np.arange(18, 18 + N_USERS),
         }
@@ -222,6 +227,15 @@ class UserStaticRegressionTask(ImputeEntityStaticTask):
     entity_table = "users"
     target_col = "target_num"
     task_type = TaskType.REGRESSION
+
+
+class UserStaticMulticlassTask(ImputeEntityStaticTask):
+    """Multiclass task over a three-category target."""
+
+    entity_col = "__PK__"
+    entity_table = "users"
+    target_col = "target_multi"
+    task_type = TaskType.MULTICLASS_CLASSIFICATION
 
 
 class UserTemporalBinaryTask(ImputeEntityTemporalTask):
