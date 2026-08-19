@@ -4,10 +4,21 @@ from typing import Dict, List
 import torch
 from torch_geometric.data import HeteroData
 from torch_geometric.typing import EdgeType, NodeType
-from torch_geometric.utils import scatter
+
+
+def _empty_loss(x_dict: Dict[NodeType, torch.Tensor]) -> torch.Tensor:
+    device = next(iter(x_dict.values())).device if x_dict else None
+    return torch.zeros((), device=device, requires_grad=True)
 
 
 class EdgeContrastiveLoss(torch.nn.Module):
+    r"""InfoNCE-style loss over the edges of a heterogeneous graph.
+
+    For every edge type, linked (dst, src) pairs are positives and all
+    unlinked pairs are negatives. The loss is computed in log space, so it is
+    numerically stable for unnormalized embeddings.
+    """
+
     def __init__(
         self,
         channels: int,
@@ -50,54 +61,60 @@ class EdgeContrastiveLoss(torch.nn.Module):
             if src_x.size(0) <= 1 or dst_x.size(0) <= 1:
                 continue
 
-            total_src = len(x_dict[src_node])
-            total_dst = len(x_dict[dst_node])
+            total_src = src_x.size(0)
+            total_dst = dst_x.size(0)
 
             if name.startswith("rev_"):
-                W = self.weights_dict[f"{dst_node}_{name.lstrip('rev_')}_{src_node}"].T
+                W = self.weights_dict[
+                    f"{dst_node}_{name.removeprefix('rev_')}_{src_node}"
+                ].T
             else:
                 W = self.weights_dict[f"{src_node}_{name}_{dst_node}"]
 
-            sim_M = dst_x @ W @ src_x.T
+            logits = (dst_x @ W @ src_x.T) / self.temp
+            device = logits.device
 
-            exp_sim_M = torch.exp(sim_M / self.temp)
-
-            adj_M = torch.zeros((total_dst, total_src), dtype=torch.bool)
+            adj_M = torch.zeros((total_dst, total_src), dtype=torch.bool, device=device)
             adj_M[dst_idx, src_idx] = True
             pos_idx = adj_M.nonzero()
             neg_idx = (~adj_M).nonzero()
 
-            pos_sim = exp_sim_M[pos_idx[:, 0], pos_idx[:, 1]]
-
-            num_negatives = (~adj_M).sum(dim=1)[pos_idx[:, 0]]
-            batch_size = pos_sim.size(0)
-
-            if batch_size <= 1 or num_negatives.min() == 0:
+            if pos_idx.size(0) <= 1 or neg_idx.size(0) == 0:
                 continue
 
+            # Subsample negatives globally to bound the computation.
             max_total_negatives = self.max_negatives * total_dst
             if neg_idx.size(0) > max_total_negatives:
-                mask = torch.randperm(neg_idx.size(0), device=neg_idx.device)[
-                    :max_total_negatives
-                ]
-                neg_idx = neg_idx[mask]
-                num_negatives = torch.zeros(
-                    total_dst, dtype=torch.long, device=neg_idx.device
-                )
-                idx, _num_negatives = torch.unique(
-                    neg_idx[:, 0], return_counts=True, sorted=False
-                )
-                num_negatives[idx] = _num_negatives
-                num_negatives = num_negatives[pos_idx[:, 0]]
+                perm = torch.randperm(neg_idx.size(0), device=device)[:max_total_negatives]
+                neg_idx = neg_idx[perm]
 
-            neg_sim = exp_sim_M[neg_idx[:, 0], neg_idx[:, 1]]
-            neg_sim = scatter(neg_sim, neg_idx[:, 0], reduce="sum")[pos_idx[:, 0]]
+            neg_rows = neg_idx[:, 0]
+            neg_logits = logits[neg_rows, neg_idx[:, 1]]
 
-            sum_sim = pos_sim + neg_sim
+            num_negatives = torch.zeros(total_dst, dtype=torch.long, device=device)
+            num_negatives.scatter_add_(0, neg_rows, torch.ones_like(neg_rows))
 
-            norm_factor = -torch.log(1 / (num_negatives + 1))
+            # Per-dst-row logsumexp of the negative logits (empty rows -> -inf).
+            row_max = torch.full((total_dst,), float("-inf"), device=device)
+            row_max.scatter_reduce_(0, neg_rows, neg_logits, reduce="amax")
+            sum_exp = torch.zeros(total_dst, device=device)
+            sum_exp.scatter_add_(0, neg_rows, torch.exp(neg_logits - row_max[neg_rows]))
+            neg_logsumexp = row_max + torch.log(sum_exp)
 
-            loss += (-torch.log(pos_sim / sum_sim) / norm_factor).sum()
-            count += batch_size
+            pos_rows = pos_idx[:, 0]
+            pos_logits = logits[pos_rows, pos_idx[:, 1]]
 
-        return loss / count if count > 0 else torch.tensor(0.0)
+            pair_loss = -(pos_logits - torch.logaddexp(pos_logits, neg_logsumexp[pos_rows]))
+
+            # Pairs whose dst row lost all its negatives in the subsample carry
+            # no signal (and their norm factor would be zero).
+            valid = num_negatives[pos_rows] > 0
+            if not valid.any():
+                continue
+
+            norm_factor = torch.log(num_negatives[pos_rows][valid].float() + 1)
+
+            loss += (pair_loss[valid] / norm_factor).sum()
+            count += int(valid.sum())
+
+        return loss / count if count > 0 else _empty_loss(x_dict)
