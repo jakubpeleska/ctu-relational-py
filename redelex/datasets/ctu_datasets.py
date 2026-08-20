@@ -14,7 +14,7 @@ __all__ = [
     "BasketballWomen", "Biodegradability", "Bupa", "Carcinogenesis",
     "CDESchools", "Chess", "ClassicModels", "CORA", "Countries", "CraftBeer", "Credit",
     "Dallas", "DCG", "Diabetes", "Dunur", "Elti", "Employee", "ErgastF1",
-    "Expenditures", "Employee", "Financial", "FNHK", "FTP", "Geneea", "Genes", "GOSales",
+    "Expenditures", "Financial", "FNHK", "FTP", "Geneea", "Genes", "GOSales",
     "Grants", "Hepatitis", "Hockey", "IMDb", "Lahman", "LegalActs", "Mesh",
     "Mondial", "Mooney", "MovieLens", "MuskLarge", "MuskSmall", "Mutagenesis",
     "NCAA", "Northwind", "Pima", "PremiereLeague", "Restbase", "Sakila",
@@ -512,7 +512,9 @@ class ErgastF1(CTUDataset):
         )
 
         db.table_dict["target"].df["date"] = db.table_dict["target"].df.join(
-            db.table_dict["races"].df.set_index("__PK__")["date"], on="raceId", how="left"
+            db.table_dict["races"].df.set_index("__PK__")["date"],
+            on="FK_races_raceId",
+            how="left",
         )["date"]
         db.table_dict["target"].time_col = "date"
         db.table_dict["target"].df.drop(columns=["raceId", "driverId"], inplace=True)
@@ -1699,14 +1701,16 @@ class VOC(CTUDataset):
         dtcols[dtcols > pd.Timestamp("1900-01-01")] = pd.NaT
         min_date = dtcols.min().min()
         max_date = dtcols.max().max()
-        delta: pd.Timedelta
+        delta = pd.Timedelta(0)
         if min_date < TIMESTAMP_MIN:
+            # Shift up by whole days (+1 to compensate for truncation).
             delta = TIMESTAMP_MIN - min_date
             delta = pd.Timedelta(days=delta.days + 1)
         elif max_date > TIMESTAMP_MAX:
             delta = TIMESTAMP_MAX - max_date
             delta = pd.Timedelta(days=delta.days - 1)
-        dtcols += delta.to_numpy().astype(np.dtype("timedelta64[D]"))
+        if delta != pd.Timedelta(0):
+            dtcols += delta.to_numpy().astype(np.dtype("timedelta64[D]"))
 
         db.table_dict["voyages"].df[dtcols.columns] = dtcols
 
