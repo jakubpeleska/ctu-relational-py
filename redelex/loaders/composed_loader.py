@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import Literal
 
 import torch
 from torch_geometric.data import HeteroData
@@ -6,30 +6,35 @@ from torch_geometric.loader import NodeLoader
 
 
 class ComposedLoader:
+    r"""Iterates over several node loaders as a single loader.
+
+    Modes:
+
+    * ``minimum``: every loader contributes ``min(len(loader))`` batches, in a
+      round-robin order shuffled within each round.
+    * ``full``: every loader is exhausted; the order is shuffled.
+    * ``rnd_uni``: like ``full``, kept for backwards compatibility.
+
+    An epoch is ``__len__`` batches long, which is ``sum`` of the loader lengths
+    for ``full`` and ``min(len) * n_loaders`` otherwise.
+    """
+
     def __init__(
         self,
         loaders: dict[str, NodeLoader],
-        mode: Literal["minimum", "full", "rnd_uni", "rnd_weighted"] = "minimum",
-        weights: Optional[list[float]] = None,
+        mode: Literal["minimum", "full", "rnd_uni"] = "minimum",
     ):
         self.loaders = loaders
         self.names = list(self.loaders.keys())
         self.loaders_len = [len(self.loaders[tn]) for tn in self.names]
         self.mode = mode
 
-        if self.mode in ["minimum", "rnd_uni", "rnd_weighted"]:
+        if self.mode in ["minimum", "rnd_uni"]:
             self.total_len = min(self.loaders_len) * len(self.loaders)
         elif self.mode == "full":
             self.total_len = sum(self.loaders_len)
         else:
             raise ValueError(f"Unknown mode: {self.mode}")
-
-        if self.mode == "rnd_weighted":
-            if weights is None:
-                raise ValueError("Weights must be provided for rnd_weighted mode")
-            if len(weights) != len(self.loaders):
-                raise ValueError("Weights length must match number of loaders")
-            self.weights = torch.as_tensor(weights, dtype=torch.float)
 
     def __iter__(self):
         self.idx = 0
@@ -46,17 +51,6 @@ class ComposedLoader:
             )
             rnd_idx = torch.randperm(rnd_cat.shape[0])
             self.rnd_loader_idx = rnd_cat[rnd_idx].long().tolist()
-        elif self.mode == "rnd_weighted":
-            # Weighted sampling over per-batch slots without replacement, so no
-            # loader can be drawn more often than its actual length.
-            slot_loader = torch.repeat_interleave(
-                torch.arange(len(self.loaders_len)), torch.tensor(self.loaders_len)
-            )
-            slot_weights = self.weights[slot_loader]
-            picks = torch.multinomial(
-                slot_weights, num_samples=self.total_len, replacement=False
-            )
-            self.rnd_loader_idx = slot_loader[picks].long().tolist()
         self.loader_iter = [iter(self.loaders[tn]) for tn in self.names]
         return self
 
