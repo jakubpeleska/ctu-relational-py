@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 from relbench.base import TaskType
 from torchmetrics import Metric
@@ -14,7 +16,7 @@ from torchmetrics.regression import MeanAbsoluteError, MeanSquaredError, R2Score
 
 
 def get_metrics(
-    task_type: TaskType, num_classes: int = None, **metrics_kwargs
+    task_type: TaskType, num_classes: Optional[int] = None, **metrics_kwargs
 ) -> tuple[dict[str, Metric], str, bool]:
     """Return (metrics, tune_metric_name, higher_is_better) for a task type.
 
