@@ -4,8 +4,6 @@ from typing import Dict, List
 import torch
 from torch_geometric.typing import NodeType
 
-from .edge_contrastive import _empty_loss
-
 
 class TableContrastiveLoss(torch.nn.Module):
     def __init__(
@@ -70,4 +68,8 @@ class TableContrastiveLoss(torch.nn.Module):
             )
             count += batch_size
 
-        return loss / count if count > 0 else _empty_loss(x_dict)
+        if count > 0:
+            return loss / count
+
+        device = next(iter(x_dict.values())).device if x_dict else None
+        return torch.zeros((), device=device, requires_grad=True)

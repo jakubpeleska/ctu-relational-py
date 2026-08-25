@@ -6,8 +6,6 @@ from torch_geometric.data import HeteroData
 from torch_geometric.nn import conv
 from torch_geometric.typing import EdgeType, NodeType
 
-from .edge_contrastive import _empty_loss
-
 
 class ContextContrastiveLoss(torch.nn.Module):
     def __init__(
@@ -84,4 +82,8 @@ class ContextContrastiveLoss(torch.nn.Module):
             )
             count += batch_size
 
-        return loss / count if count > 0 else _empty_loss(x_dict)
+        if count > 0:
+            return loss / count
+
+        device = data.device if x_dict else None
+        return torch.zeros((), device=device, requires_grad=True)

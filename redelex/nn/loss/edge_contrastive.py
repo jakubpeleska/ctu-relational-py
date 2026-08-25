@@ -6,17 +6,21 @@ from torch_geometric.data import HeteroData
 from torch_geometric.typing import EdgeType, NodeType
 
 
-def _empty_loss(x_dict: Dict[NodeType, torch.Tensor]) -> torch.Tensor:
-    device = next(iter(x_dict.values())).device if x_dict else None
-    return torch.zeros((), device=device, requires_grad=True)
-
-
 class EdgeContrastiveLoss(torch.nn.Module):
     r"""InfoNCE-style loss over the edges of a heterogeneous graph.
 
-    For every edge type, linked (dst, src) pairs are positives and all
-    unlinked pairs are negatives. The loss is computed in log space, so it is
-    numerically stable for unnormalized embeddings.
+    For every edge type, the (dst, src) pairs linked by the batch's
+    own edges are the positives, and the batch's remaining pairs are
+    the negatives. The loss is computed in log space, so it is numerically
+    stable for unnormalized embeddings.
+
+    Args:
+        channels: Embedding dimension.
+        edge_types: Edge types to score. Reversed types share the transposed
+            weight matrix of their forward counterpart.
+        temperature: Softmax temperature.
+        max_negatives: Number of negatives sampled per destination row, when the
+            batch offers more than that.
     """
 
     def __init__(
@@ -43,6 +47,31 @@ class EdgeContrastiveLoss(torch.nn.Module):
 
         self.temp = temperature
         self.max_negatives = max_negatives
+
+    def _sample_negatives(self, adj_M: torch.Tensor) -> torch.Tensor:
+        r"""Pick the unlinked (dst, src) pairs to use as negatives.
+
+        Args:
+            adj_M: Boolean [num_dst, num_src] adjacency of the batch.
+
+        Returns:
+            A [num_negatives, 2] tensor of (dst row, src column) pairs, holding
+            at most ``max_negatives`` entries per destination row.
+        """
+        num_dst, num_src = adj_M.shape
+        if num_src <= self.max_negatives:
+            return (~adj_M).nonzero()
+
+        # Draw `max_negatives` source columns for every dst row without
+        # replacement, then drop the ones that turn out to be linked. Sampling
+        # per row keeps a row's negatives independent of how densely the other
+        # rows happen to be connected, and matches the table and context losses.
+        cols = torch.rand(num_dst, num_src, device=adj_M.device).argsort(dim=1)[
+            :, : self.max_negatives
+        ]
+        rows = torch.arange(num_dst, device=adj_M.device).unsqueeze(1).expand_as(cols)
+        keep = ~adj_M[rows, cols]
+        return torch.stack([rows[keep], cols[keep]], dim=1)
 
     def forward(
         self, data: HeteroData, x_dict: Dict[NodeType, torch.Tensor]
@@ -77,16 +106,13 @@ class EdgeContrastiveLoss(torch.nn.Module):
             adj_M = torch.zeros((total_dst, total_src), dtype=torch.bool, device=device)
             adj_M[dst_idx, src_idx] = True
             pos_idx = adj_M.nonzero()
-            neg_idx = (~adj_M).nonzero()
 
-            if pos_idx.size(0) <= 1 or neg_idx.size(0) == 0:
+            if pos_idx.size(0) <= 1:
                 continue
 
-            # Subsample negatives globally to bound the computation.
-            max_total_negatives = self.max_negatives * total_dst
-            if neg_idx.size(0) > max_total_negatives:
-                perm = torch.randperm(neg_idx.size(0), device=device)[:max_total_negatives]
-                neg_idx = neg_idx[perm]
+            neg_idx = self._sample_negatives(adj_M)
+            if neg_idx.size(0) == 0:
+                continue
 
             neg_rows = neg_idx[:, 0]
             neg_logits = logits[neg_rows, neg_idx[:, 1]]
@@ -95,9 +121,13 @@ class EdgeContrastiveLoss(torch.nn.Module):
             num_negatives.scatter_add_(0, neg_rows, torch.ones_like(neg_rows))
 
             # Per-dst-row logsumexp of the negative logits (empty rows -> -inf).
-            row_max = torch.full((total_dst,), float("-inf"), device=device)
+            # The accumulators follow the logits' dtype, which is reduced
+            # precision under `torch.autocast`; scatter requires an exact match.
+            row_max = torch.full(
+                (total_dst,), float("-inf"), device=device, dtype=logits.dtype
+            )
             row_max.scatter_reduce_(0, neg_rows, neg_logits, reduce="amax")
-            sum_exp = torch.zeros(total_dst, device=device)
+            sum_exp = torch.zeros(total_dst, device=device, dtype=logits.dtype)
             sum_exp.scatter_add_(0, neg_rows, torch.exp(neg_logits - row_max[neg_rows]))
             neg_logsumexp = row_max + torch.log(sum_exp)
 
@@ -106,8 +136,7 @@ class EdgeContrastiveLoss(torch.nn.Module):
 
             pair_loss = -(pos_logits - torch.logaddexp(pos_logits, neg_logsumexp[pos_rows]))
 
-            # Pairs whose dst row lost all its negatives in the subsample carry
-            # no signal (and their norm factor would be zero).
+            # A dst row keeps no negatives only when every column sampled for it was linked.
             valid = num_negatives[pos_rows] > 0
             if not valid.any():
                 continue
@@ -117,4 +146,8 @@ class EdgeContrastiveLoss(torch.nn.Module):
             loss += (pair_loss[valid] / norm_factor).sum()
             count += int(valid.sum())
 
-        return loss / count if count > 0 else _empty_loss(x_dict)
+        if count > 0:
+            return loss / count
+
+        device = next(iter(x_dict.values())).device if x_dict else None
+        return torch.zeros((), device=device, requires_grad=True)
