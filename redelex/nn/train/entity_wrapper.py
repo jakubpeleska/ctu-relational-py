@@ -1,10 +1,12 @@
 import copy
-from typing import Optional
+from typing import Optional, Union
 
 import lightning as L
 import torch
 from relbench.base import EntityTask, TaskType
 from torchmetrics.aggregation import MaxMetric, MeanMetric, MinMetric
+
+from redelex.tasks.mixins import EntityTaskMixin
 
 from .utils import get_loss, get_metrics
 
@@ -20,7 +22,7 @@ class LightningEntityTaskWrapper(L.LightningModule):
         self,
         model: torch.nn.Module,
         optimizer: torch.optim.Optimizer,
-        task: EntityTask,
+        task: Union[EntityTaskMixin, EntityTask],
         lr_scheduler_config: Optional[dict] = None,
     ):
         super().__init__()
