@@ -51,9 +51,10 @@ def test_get_metrics_multiclass_requires_num_classes():
         assert torch.isfinite(metric.compute())
 
 
-def test_wrapper_infers_num_classes_from_task(synthetic_dataset):
-    """Regression: building the wrapper for a multiclass task used to require
-    the caller to pass num_classes, and crashed in torchmetrics without it."""
+def test_wrapper_takes_num_classes_from_task(synthetic_dataset):
+    """Regression: the wrapper built multiclass metrics without num_classes,
+    which torchmetrics rejects, so every multiclass task crashed here. The task
+    declares the count and the wrapper passes it through."""
     task = UserStaticMulticlassTask(synthetic_dataset)
     model = torch.nn.Linear(4, task.num_classes)
 
@@ -175,6 +176,31 @@ def test_save_model_callback_explicit_monitor_min_mode(tmp_path):
     best.unlink()
     callback.on_validation_epoch_end(_trainer({"val_mae": torch.tensor(2.0)}), module)
     assert not best.exists()
+
+
+@pytest.mark.parametrize(
+    "task_cls",
+    [UserStaticBinaryTask, UserStaticRegressionTask, UserStaticMulticlassTask],
+)
+def test_callback_monitor_is_a_metric_the_wrapper_logs(
+    task_cls, synthetic_dataset, tmp_path
+):
+    """The other callback tests drive a stand-in module, so they cannot catch the
+    monitored name drifting away from what the wrapper logs -- which is exactly
+    the bug that kept best_model.pt from ever being written.
+    """
+    task = task_cls(synthetic_dataset)
+    model = torch.nn.Linear(4, task.num_classes or 1)
+    wrapper = LightningEntityTaskWrapper(
+        model=model, optimizer=torch.optim.Adam(model.parameters()), task=task
+    )
+
+    monitor, mode = SaveModelCallback(save_dir=str(tmp_path))._resolve_monitor(wrapper)
+
+    # `on_validation_epoch_end` logs every val metric under a "val_" prefix.
+    assert wrapper.tune_metric in wrapper.val_metrics
+    assert monitor == f"val_{wrapper.tune_metric}"
+    assert mode == ("max" if wrapper.higher_is_better else "min")
 
 
 def test_save_model_callback_save_every_epoch(tmp_path):

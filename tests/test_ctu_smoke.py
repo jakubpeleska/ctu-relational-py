@@ -173,6 +173,7 @@ def test_ctu_task_tables(dataset_name, task_name, dataset_factory, smoke_cache_d
     tic = time.time()
     entity_ids = {}
     sizes = {}
+    observed_labels = set()
     for split in ["train", "val", "test"]:
         table = task.get_table(split, mask_input_cols=False)
         sizes[split] = len(table.df)
@@ -202,6 +203,7 @@ def test_ctu_task_tables(dataset_name, task_name, dataset_factory, smoke_cache_d
                 f"{dataset_name}/{task_name}: multiclass target is not integer"
             )
             assert target.min() >= -1
+            observed_labels |= set(target.unique()) - {-1}
         elif task.task_type == TaskType.REGRESSION:
             assert pd.api.types.is_numeric_dtype(target), (
                 f"{dataset_name}/{task_name}: regression target is not numeric"
@@ -224,8 +226,28 @@ def test_ctu_task_tables(dataset_name, task_name, dataset_factory, smoke_cache_d
     )
     assert len(masked.df) == sizes["test"]
 
+    # `num_classes` is declared per task, so it can disagree with the data. It is
+    # what the training metrics are sized from, so a wrong value is a silent
+    # error there. The observed count is printed below for the tasks that do not
+    # declare one yet.
+    num_classes = getattr(task, "num_classes", None)
+    if task.task_type == TaskType.MULTICLASS_CLASSIFICATION and num_classes is not None:
+        assert observed_labels <= set(range(num_classes)), (
+            f"{dataset_name}/{task_name}: declares num_classes={num_classes} but the "
+            f"labels reach {max(observed_labels)}"
+        )
+        assert len(observed_labels) == num_classes, (
+            f"{dataset_name}/{task_name}: declares num_classes={num_classes} but the "
+            f"splits only contain {len(observed_labels)} distinct labels"
+        )
+
+    observed = (
+        f", classes = {len(observed_labels)} (declared {num_classes})"
+        if task.task_type == TaskType.MULTICLASS_CLASSIFICATION
+        else ""
+    )
     print(
         f"\n{dataset_name}/{task_name}: {task.task_type.value}, "
-        f"train/val/test = {sizes['train']}/{sizes['val']}/{sizes['test']}, "
-        f"{elapsed:.1f}s"
+        f"train/val/test = {sizes['train']}/{sizes['val']}/{sizes['test']}"
+        f"{observed}, {elapsed:.1f}s"
     )

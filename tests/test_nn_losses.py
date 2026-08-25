@@ -100,6 +100,52 @@ def test_edge_contrastive_loss_subsampling():
     assert torch.isfinite(loss_fn(data, x_dict))
 
 
+def test_edge_contrastive_negatives_are_sampled_per_row():
+    """Regression: the negatives were subsampled from one pool shared by every
+    destination row (a budget of max_negatives * num_dst), so how many negatives
+    a row got depended on the other rows and some rows were left with none.
+    """
+    loss_fn = EdgeContrastiveLoss(C, edge_types=[("a", "e", "b")], max_negatives=3)
+
+    adj = torch.zeros(5, 20, dtype=torch.bool)
+    adj[0, :5] = True  # row 0 is partly linked; rows 1-4 are not linked at all
+
+    neg_idx = loss_fn._sample_negatives(adj)
+    counts = torch.bincount(neg_idx[:, 0], minlength=5)
+
+    assert (counts <= 3).all()
+    # A row with no edges can never lose a sampled column, so it always keeps
+    # the full quota. Under the pooled scheme this held only by chance.
+    assert (counts[1:] == 3).all()
+    # Negatives must never be a linked pair.
+    assert not adj[neg_idx[:, 0], neg_idx[:, 1]].any()
+
+
+def test_edge_contrastive_negatives_use_all_pairs_when_small():
+    """Below the cap every unlinked pair of the batch is a negative."""
+    loss_fn = EdgeContrastiveLoss(C, edge_types=[("a", "e", "b")], max_negatives=99)
+
+    adj = torch.zeros(3, 4, dtype=torch.bool)
+    adj[0, 0] = True
+    neg_idx = loss_fn._sample_negatives(adj)
+
+    assert neg_idx.size(0) == 3 * 4 - 1
+
+
+def test_edge_contrastive_loss_reduced_precision():
+    """Regression: the logsumexp accumulators were hardcoded to float32, so
+    scatter raised "Expected self.dtype to be equal to src.dtype" as soon as the
+    logits came out in reduced precision, i.e. under torch.autocast."""
+    data = _mini_edge_data()
+    loss_fn = EdgeContrastiveLoss(C, edge_types=list(data.edge_types))
+    x_dict = {"a": torch.randn(6, C), "b": torch.randn(8, C)}
+
+    with torch.autocast("cpu", dtype=torch.bfloat16):
+        loss = loss_fn(data, x_dict)
+    assert torch.isfinite(loss)
+    loss.float().backward()
+
+
 def test_edge_contrastive_loss_degenerate_inputs():
     data = HeteroData()
     data["a"].num_nodes = 1

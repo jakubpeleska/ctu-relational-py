@@ -75,35 +75,30 @@ def test_static_regression_nan_preserved(synthetic_dataset):
     assert df[~df["__PK__"].isin(NAN_TARGET_NUM_ROWS)]["target_num"].notna().all()
 
 
-def test_num_classes_inferred_from_target(synthetic_dataset):
-    """num_classes comes from the target column, without building any table."""
-    assert UserStaticBinaryTask(synthetic_dataset).num_classes == 2
-    # Not hard-coded: this target has three categories.
-    assert UserStaticMulticlassTask(synthetic_dataset).num_classes == 3
-    # Regression has no classes.
-    assert UserStaticRegressionTask(synthetic_dataset).num_classes is None
-
-
-def test_num_classes_excludes_missing_sentinel(synthetic_dataset):
-    """The -1 label used for missing targets is not a class."""
+def test_labels_exclude_the_missing_sentinel(synthetic_dataset):
+    """The -1 label used for missing targets is not one of the classes."""
     task = UserStaticMulticlassTask(synthetic_dataset)
     labels = _all_split_frames(task)["target_multi"]
 
     assert -1 in set(labels)  # the synthetic target does contain NaNs
     assert set(labels) - {-1} == {0, 1, 2}
+
+
+def test_declared_num_classes_matches_the_encoded_labels(synthetic_dataset):
+    """`num_classes` is declared per task, so it can disagree with the data.
+    Where a task declares it, the labels must land in ``range(num_classes)``.
+    """
+    task = UserStaticMulticlassTask(synthetic_dataset)
     assert task.num_classes == 3
 
+    labels = set(_all_split_frames(task)["target_multi"]) - {-1}
+    assert labels == set(range(task.num_classes))
 
-def test_num_classes_matches_table_labels(synthetic_dataset):
-    """Reading num_classes first must not change the label encoding."""
-    eager = UserStaticMulticlassTask(synthetic_dataset)
-    assert eager.num_classes == 3
-    eager_labels = _all_split_frames(eager)["target_multi"].tolist()
 
-    lazy = UserStaticMulticlassTask(synthetic_dataset)
-    lazy_labels = _all_split_frames(lazy)["target_multi"].tolist()
-
-    assert eager_labels == lazy_labels
+def test_num_classes_defaults_to_none(synthetic_dataset):
+    """Nothing infers the count: a task that does not declare it reports None."""
+    assert UserStaticRegressionTask(synthetic_dataset).num_classes is None
+    assert UserCatAsMulticlassTask(synthetic_dataset).num_classes is None
 
 
 def test_binary_task_validates_category_count(synthetic_dataset):
@@ -244,3 +239,27 @@ def test_evaluate_length_mismatch(synthetic_dataset):
     target_table = task.get_table("test", mask_input_cols=False)
     with pytest.raises(ValueError, match="length"):
         task.evaluate(np.zeros(len(target_table.df) + 1), target_table, metrics=[])
+
+
+def test_evaluate_reports_empty_default_metrics(synthetic_dataset):
+    """`metrics` is declared per task. A task that declares an empty list gets a
+    clear error rather than an empty result dict."""
+
+    class NoMetricsTask(UserStaticRegressionTask):
+        metrics = []
+
+    task = NoMetricsTask(synthetic_dataset)
+    target_table = task.get_table("test", mask_input_cols=False)
+    with pytest.raises(NotImplementedError, match="Default metrics are not defined"):
+        task.evaluate(np.zeros(len(target_table.df)), target_table)
+
+
+def test_evaluate_with_explicit_metrics(synthetic_dataset):
+    task = UserStaticRegressionTask(synthetic_dataset)
+    target_table = task.get_table("test", mask_input_cols=False)
+
+    def mae(target, pred):
+        return float(np.abs(target - pred).mean())
+
+    scores = task.evaluate(np.zeros(len(target_table.df)), target_table, metrics=[mae])
+    assert set(scores) == {"mae"} and scores["mae"] >= 0.0

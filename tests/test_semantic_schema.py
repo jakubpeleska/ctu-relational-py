@@ -48,6 +48,27 @@ def test_guess_low_cardinality_int_is_categorical():
     assert guess_column_stype(ser, col_name="status") == stype.categorical
 
 
+@pytest.mark.parametrize(
+    "cardinality,expected", [(1000, True), (1001, False)], ids=["at_limit", "over_limit"]
+)
+def test_cardinality_limit_is_inclusive(cardinality, expected):
+    """The two cardinality bounds must be exact complements, so that every
+    column falls in exactly one of the categorical / not-categorical cases."""
+    from redelex.data.semantic_schema import (
+        MAXIMUM_CARDINALITY_THRESHOLD,
+        _is_categorical,
+        _is_not_categorical,
+    )
+
+    assert MAXIMUM_CARDINALITY_THRESHOLD == 1000
+    # Each value is repeated 25 times, putting the distinct-value fraction at
+    # 0.04 -- inside both fraction thresholds, so cardinality alone decides.
+    ser = pd.Series(np.repeat(np.arange(cardinality), 25))
+
+    assert _is_categorical(ser) is expected
+    assert _is_not_categorical(ser) is not expected
+
+
 def test_guess_high_cardinality_id_is_none():
     ser = pd.Series(np.arange(100))
     assert guess_column_stype(ser, col_name="user_id") is None

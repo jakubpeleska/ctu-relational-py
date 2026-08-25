@@ -52,6 +52,27 @@ def test_task_exports_are_importable():
     )
 
 
+def test_datasets_without_tasks_are_known():
+    """The datasets whose only tasks were link prediction have no task left.
+
+    They stay registered so their databases remain usable, but nothing can be
+    trained on them until link prediction is implemented. Pinned here so that
+    losing a task for any *other* dataset is caught rather than silently
+    reducing the smoke test's coverage.
+    """
+    expected = {
+        "ctu-credit",
+        "ctu-dunur",
+        "ctu-elti",
+        "ctu-mooney",
+        "ctu-samegen",
+        "ctu-satellite",
+        "ctu-shakespeare",
+    }
+    without_tasks = {n for n in CTU_DATASETS if not task_registry.get(n)}
+    assert without_tasks == expected
+
+
 def test_datasets_are_registered_once():
     registered = [
         cls for name, (cls, _, _) in dataset_registry.items() if name.startswith("ctu-")

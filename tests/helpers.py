@@ -236,6 +236,8 @@ class UserStaticMulticlassTask(ImputeEntityStaticTask):
     entity_table = "users"
     target_col = "target_multi"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    # Declared per task; nothing derives it from the data.
+    num_classes = 3
 
 
 class UserTemporalBinaryTask(ImputeEntityTemporalTask):
