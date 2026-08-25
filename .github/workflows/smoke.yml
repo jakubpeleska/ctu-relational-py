@@ -1,0 +1,36 @@
+name: CTU smoke tests
+
+# Manual only: these tests download databases from relational.fel.cvut.cz, so
+# they are never run on a schedule or on a pull request.
+on:
+  workflow_dispatch:
+    inputs:
+      datasets:
+        description: "Comma-separated dataset names, e.g. ctu-financial,ctu-seznam (empty runs all of them)"
+        required: false
+        default: "ctu-financial,ctu-seznam"
+
+jobs:
+  smoke:
+    name: Download every selected database and build its tasks
+    runs-on: ubuntu-latest
+    # A full run downloads all 71 databases and builds all 89 tasks.
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      # `_selected_datasets` in tests/test_ctu_smoke.py reads this variable and
+      # fails on an unknown name; empty means every registered CTU dataset.
+      - name: Run smoke tests
+        env:
+          REDELEX_SMOKE_DATASETS: ${{ inputs.datasets }}
+        run: uv run pytest -m needs_network -rs

@@ -118,7 +118,6 @@ register_dataset("ctu-elti", Elti)
 register_dataset("ctu-employee", Employee)
 register_dataset("ctu-ergastf1", ErgastF1)
 register_dataset("ctu-expenditures", Expenditures)
-register_dataset("ctu-employee", Employee)
 register_dataset("ctu-financial", Financial)
 register_dataset("ctu-fnhk", FNHK)
 register_dataset("ctu-ftp", FTP)
@@ -177,7 +176,7 @@ __all__ = [
     "BasketballWomen", "Biodegradability", "Bupa", "Carcinogenesis",
     "CDESchools", "Chess", "ClassicModels", "CORA", "Countries", "CraftBeer", "Credit",
     "Dallas", "DCG", "Diabetes", "Dunur", "Elti", "Employee", "ErgastF1",
-    "Expenditures", "Employee", "Financial", "FNHK", "FTP", "Geneea", "Genes", "GOSales",
+    "Expenditures", "Financial", "FNHK", "FTP", "Geneea", "Genes", "GOSales",
     "Grants", "Hepatitis", "Hockey", "IMDb", "Lahman", "LegalActs", "Mesh",
     "Mondial", "Mooney", "MovieLens", "MuskLarge", "MuskSmall", "Mutagenesis",
     "NCAA", "Northwind", "Pima", "PremiereLeague", "Restbase", "Sakila",

@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 from relbench.base import TaskType
 from torchmetrics import Metric
@@ -14,8 +16,15 @@ from torchmetrics.regression import MeanAbsoluteError, MeanSquaredError, R2Score
 
 
 def get_metrics(
-    task_type: TaskType, **metrics_kwargs
+    task_type: TaskType, num_classes: Optional[int] = None, **metrics_kwargs
 ) -> tuple[dict[str, Metric], str, bool]:
+    """Return (metrics, tune_metric_name, higher_is_better) for a task type.
+
+    Args:
+        task_type: The relbench task type.
+        num_classes: Number of classes; required for multiclass classification.
+        **metrics_kwargs: Extra keyword arguments passed to every metric.
+    """
     if task_type == TaskType.BINARY_CLASSIFICATION:
         return (
             {
@@ -29,14 +38,31 @@ def get_metrics(
         )
 
     elif task_type == TaskType.MULTICLASS_CLASSIFICATION:
+        if num_classes is None:
+            raise ValueError(
+                "num_classes is required for multiclass classification metrics"
+            )
         return (
             {
-                "macro_accuracy": MulticlassAccuracy(average="macro", **metrics_kwargs),
-                "micro_accuracy": MulticlassAccuracy(average="micro", **metrics_kwargs),
-                "macro_f1": MulticlassF1Score(average="macro", **metrics_kwargs),
-                "micro_f1": MulticlassF1Score(average="micro", **metrics_kwargs),
-                "macro_roc_auc": MulticlassAUROC(average="macro", **metrics_kwargs),
-                "micro_roc_auc": MulticlassAUROC(average="micro", **metrics_kwargs),
+                "macro_accuracy": MulticlassAccuracy(
+                    num_classes=num_classes, average="macro", **metrics_kwargs
+                ),
+                "micro_accuracy": MulticlassAccuracy(
+                    num_classes=num_classes, average="micro", **metrics_kwargs
+                ),
+                "macro_f1": MulticlassF1Score(
+                    num_classes=num_classes, average="macro", **metrics_kwargs
+                ),
+                "micro_f1": MulticlassF1Score(
+                    num_classes=num_classes, average="micro", **metrics_kwargs
+                ),
+                # MulticlassAUROC does not support average="micro".
+                "macro_roc_auc": MulticlassAUROC(
+                    num_classes=num_classes, average="macro", **metrics_kwargs
+                ),
+                "weighted_roc_auc": MulticlassAUROC(
+                    num_classes=num_classes, average="weighted", **metrics_kwargs
+                ),
             },
             "macro_roc_auc",
             True,

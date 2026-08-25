@@ -49,7 +49,7 @@ class DBInterface(ABC):
         pass
 
     def get_tables(self) -> dict[str, "pd.DataFrame"]:
-        return {name: self.get_table(name) for name in self.table_names()}
+        return {name: self.get_table(name) for name in self.table_names}
 
     @abstractmethod
     def get_relbench_db(self) -> Database:

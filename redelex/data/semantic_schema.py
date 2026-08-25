@@ -82,7 +82,12 @@ def check_predetermined_types(
 
 def guess_column_stype(
     ser: pd.Series, col_name: str = "", sql_type: Optional[sql_types.TypeEngine] = None
-) -> stype:
+) -> Optional[stype]:
+    """Guess the semantic type of a column.
+
+    Returns None when the column should be ignored (empty, an ID-like column,
+    or undecidable).
+    """
     ser = ser.dropna()
     if ser.empty:
         return None
@@ -150,11 +155,13 @@ def guess_table_stypes(
     table_schema: Optional[TableSchema] = None,
     task: Optional[mixins.EntityTaskMixin] = None,
     ignore_none: bool = True,
-) -> Dict[str, stype]:
+) -> Dict[str, Optional[stype]]:
     """
     Guess the stypes of columns in the table.
 
-    Contains additional logic for foreign keys and filtering based on constructor input.
+    Contains additional logic for primary/foreign keys (always mapped to None),
+    the time column and the task target column. With ``ignore_none=True``,
+    undecided feature columns are omitted; key columns keep their None entry.
     """
 
     schema: Dict[str, stype] = {}
@@ -186,10 +193,16 @@ def guess_table_stypes(
                 raise ValueError(f"Unknown task type {task.task_type.name}")
             continue
 
-        try:
-            sql_type = getattr(sql_types, table_schema.type_dict.get(col, None))()
-        except Exception:
-            sql_type = None
+        sql_type = None
+        if table_schema is not None:
+            type_name = table_schema.type_dict.get(col)
+            sql_type_cls = getattr(sql_types, type_name, None) if type_name else None
+            if sql_type_cls is not None:
+                try:
+                    sql_type = sql_type_cls()
+                except TypeError:
+                    # Some types require constructor arguments (e.g. ARRAY).
+                    sql_type = None
 
         guess = guess_column_stype(table.df[col], col_name=col, sql_type=sql_type)
         if ignore_none and guess is None:
@@ -203,10 +216,11 @@ def guess_schema(
     db: Database,
     db_schema: Optional[DBSchema] = None,
     task: Optional[mixins.BaseTask] = None,
-) -> Dict[str, Dict[str, stype]]:
-    """Locate all database tables and all columns and run :py:method:`guess_column_type` for all of them.
+) -> Dict[str, Dict[str, Optional[stype]]]:
+    """Guess the stypes of all columns of all tables in the database.
 
-    Returns the result as a :py:class:`Schema`.
+    Runs :func:`guess_table_stypes` for every table and returns a dictionary
+    mapping table names to their column-to-stype dictionaries.
     """
     schema = {}
 
@@ -240,7 +254,7 @@ def _is_categorical(ser: pd.Series) -> bool:
 
     return (
         cardinality / n_nonnull <= FRACTION_DISTINCT_NONNULL_GUARANTEED_THRESHOLD
-        and cardinality < MAXIMUM_CARDINALITY_THRESHOLD
+        and cardinality <= MAXIMUM_CARDINALITY_THRESHOLD
     )
 
 
@@ -248,9 +262,11 @@ def _is_id_name(col_name: str) -> bool:
     return ID_NAME_REGEX.search(col_name) is not None
 
 
+_INFLECT_ENGINE = inflect.engine()
+
+
 def _is_plural(s: str) -> bool:
-    p = inflect.engine()
-    return p.singular_noun(s) is not False
+    return _INFLECT_ENGINE.singular_noun(s) is not False
 
 
 def _is_timestamp(ser: pd.Series) -> bool:

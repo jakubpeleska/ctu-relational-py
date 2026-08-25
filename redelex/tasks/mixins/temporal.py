@@ -105,6 +105,9 @@ class TemporalTaskMixin(BaseTask):
             )
             freq = self.timedelta
 
+        else:
+            raise ValueError(f"Unknown split: {split!r} (expected train, val or test)")
+
         timestamps = pd.date_range(start=start, end=end, freq=freq)
 
         if split == "train" and len(timestamps) < 3:

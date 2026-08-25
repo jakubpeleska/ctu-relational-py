@@ -1,3 +1,6 @@
+import warnings
+from typing import Dict, List, Optional, Tuple, Union
+
 import numpy as np
 import pandas as pd
 import sqlalchemy as sa
@@ -96,14 +99,107 @@ def get_db_url(
         )
     if driver == "pg8000" and not HAS_PG8000:
         raise ImportError("pg8000 is not installed. Please install it to use this driver.")
-    if driver == "mysql" and not HAS_MYSQL:
+    if driver == "mysqlconnector" and not HAS_MYSQL:
         raise ImportError(
             "mysql.connector is not installed. Please install it to use this driver."
         )
     if driver == "pymysql" and not HAS_PYMYSQL:
         raise ImportError("pymysql is not installed. Please install it to use this driver.")
 
-    return f"{dialect}+{driver}://{user}:{password}@{host}:{port}/{database}"
+    # sa.URL.create escapes special characters (e.g. '@' or '/' in passwords).
+    url = sa.URL.create(
+        drivername=f"{dialect}+{driver}",
+        username=user,
+        password=password,
+        host=host,
+        port=int(port) if port is not None else None,
+        database=database,
+    )
+    return url.render_as_string(hide_password=False)
+
+
+def resolve_column_dtype(
+    column: sa.Column,
+) -> Tuple[Optional[Union[str, pd.api.extensions.ExtensionDtype]], Optional[type]]:
+    """Resolve the pandas dtype and generic SQLAlchemy type of a column.
+
+    Args:
+        column (sqlalchemy.Column): The reflected SQLAlchemy column.
+
+    Returns:
+        Tuple[Optional[dtype], Optional[type]]: The pandas dtype to read the column
+            with and the generic SQLAlchemy type class, or (None, None) when the
+            column type is not supported.
+    """
+    try:
+        sql_type = type(column.type.as_generic())
+    except NotImplementedError:
+        sql_type = None
+
+    dtype = SQL_TO_PANDAS.get(sql_type)
+
+    # Special case for the MySQL YEAR type, which has no generic equivalent.
+    if dtype is None and str(column.type) == "YEAR":
+        dtype = pd.Int32Dtype()
+        sql_type = sa.types.Integer
+
+    return dtype, sql_type
+
+
+def reindex_fk(
+    df_dict: Dict[str, pd.DataFrame],
+    src_table: str,
+    src_columns: List[str],
+    ref_table: str,
+    ref_columns: List[str],
+) -> Tuple[pd.Series, str]:
+    """Map a (possibly composite) foreign key to the referenced table's ``__PK__``.
+
+    Args:
+        df_dict (Dict[str, pd.DataFrame]): Dataframes of all tables, each with an
+            artificial ``__PK__`` column.
+        src_table (str): Name of the table containing the foreign key.
+        src_columns (List[str]): The foreign key columns.
+        ref_table (str): Name of the referenced table.
+        ref_columns (List[str]): The referenced columns.
+
+    Returns:
+        Tuple[pd.Series, str]: The re-indexed foreign key values (aligned row-for-row
+            with the source table, missing references as NaN) and the new column name.
+    """
+    fk_name = f"FK_{ref_table}_" + "_".join(src_columns)
+
+    df_src = df_dict[src_table][src_columns]
+    df_ref = df_dict[ref_table][[*ref_columns, "__PK__"]]
+
+    if df_ref.duplicated(subset=ref_columns).any():
+        warnings.warn(
+            f"Referenced columns {ref_columns} of table '{ref_table}' are not "
+            f"unique; foreign key '{fk_name}' of table '{src_table}' is resolved "
+            "to the first matching row.",
+            stacklevel=2,
+        )
+        df_ref = df_ref.drop_duplicates(subset=ref_columns, keep="first")
+
+    fk_col = df_src.merge(
+        df_ref,
+        how="left",
+        left_on=src_columns,
+        right_on=ref_columns,
+    )["__PK__"]
+
+    # pandas merge matches NaN keys to NaN keys; a missing key must stay dangling.
+    na_mask = df_src.isna().any(axis=1).to_numpy()
+    if na_mask.any():
+        fk_col = fk_col.mask(na_mask)
+
+    if len(fk_col) != len(df_src):
+        raise RuntimeError(
+            f"Re-indexing foreign key '{fk_name}' of table '{src_table}' changed "
+            f"the row count ({len(df_src)} -> {len(fk_col)})."
+        )
+
+    return fk_col, fk_name
 
 
 def get_db_connection(connection_url: str) -> sa.Connection:
@@ -127,6 +223,8 @@ __all__ = [
     "SQL_TO_PANDAS",
     "get_db_url",
     "get_db_connection",
+    "resolve_column_dtype",
+    "reindex_fk",
     "HAS_PSYCOPG2",
     "HAS_PG8000",
     "HAS_MYSQL",

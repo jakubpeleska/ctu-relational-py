@@ -30,14 +30,17 @@ class StaticTaskMixin(BaseTask):
 
         raise NotImplementedError
 
-    def make_split_range(self, db: Database, split: str) -> pd.Series:
-        r"""Make a indices range for a split.
+    def make_split_range(self, db: Database, split: str) -> pd.Index:
+        r"""Make an index range for a split.
+
+        The sampling table is split 80/10/10 (train/val/test) with a fixed
+        seed, so the split is deterministic across calls.
 
         Args:
             db: The database object to use.
             split: The split to be made.
         Returns:
-            The indices of the split.
+            The row indices of the split.
         """
         random_state = np.random.RandomState(seed=42)
         sampling_df = db.table_dict[self.sampling_table].df

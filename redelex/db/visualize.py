@@ -67,16 +67,12 @@ def visualize_db(
     os.makedirs(output_dir, exist_ok=True)
 
     out_filename = os.path.join(output_dir, f"{db_name}.svg")
-    tmp_dot_file = os.path.join(tempfile.gettempdir(), f"{db_name}.dot")
 
     with tempfile.NamedTemporaryFile(mode="w", suffix=".dot", delete=True) as tmp_dot:
         tmp_dot.write(dot_str)
-        tmp_dot_file = tmp_dot.name
-        pydot_graph = pydot.graph_from_dot_file(tmp_dot_file)[0]
-        output_graphviz_svg = pydot_graph.write(out_filename, format="svg")
-
-    if not output_graphviz_svg:
-        raise RuntimeError("Graphviz failed to generate the SVG file.")
+        tmp_dot.flush()
+        pydot_graph = pydot.graph_from_dot_file(tmp_dot.name)[0]
+        pydot_graph.write(out_filename, format="svg")
 
     return out_filename
 

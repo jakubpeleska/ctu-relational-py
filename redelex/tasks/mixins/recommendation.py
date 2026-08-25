@@ -26,11 +26,7 @@ class RecommendationTaskMixin(BaseTask):
     dst_entity_table: str
     eval_k: int
     task_type: TaskType
-
-    # TODO: add proper metrics
-    @property
-    def metrics(self) -> list[Callable[[NDArray, NDArray], float]]:
-        return []
+    metrics: list[Callable[[NDArray, NDArray], float]]
 
     def __init__(
         self,

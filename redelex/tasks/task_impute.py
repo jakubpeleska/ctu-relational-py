@@ -56,6 +56,10 @@ class ImputeEntityStaticTask(StaticTaskMixin, ImputeEntityTaskMixin):
 class ImputeEntityTemporalTask(TemporalTaskMixin, ImputeEntityTaskMixin):
     r"""A target imputation temporal task on a dataset.
 
+    Unlike :class:`TemporalTaskMixin`, ``timedelta`` is not a prediction
+    window here: it only acts as a boundary epsilon so that the train/val/test
+    ranges produced by :meth:`make_split_range` do not overlap.
+
     Attributes are inherited from ImputeEntityTaskMixin and TemporalTaskMixin.
     """
 
@@ -115,5 +119,7 @@ class ImputeEntityTemporalTask(TemporalTaskMixin, ImputeEntityTaskMixin):
             return pd.Series(
                 [self.dataset.val_timestamp, self.dataset.test_timestamp - self.timedelta]
             )
-        else:
+        elif split == "test":
             return pd.Series([self.dataset.test_timestamp, db.max_timestamp])
+        else:
+            raise ValueError(f"Unknown split: {split!r} (expected train, val or test)")

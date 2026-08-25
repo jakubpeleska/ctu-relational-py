@@ -49,12 +49,10 @@ class TableContrastiveLoss(torch.nn.Module):
                 sim_pos = sim_m.diag()
                 n = sim_m.size(0)
                 sim_neg = sim_m.flatten()[1:].view(n - 1, n + 1)[:, :-1].reshape(n, n - 1)
-                rnd_idx = torch.stack(
-                    [
-                        torch.randperm(num_negatives - 1)[: self.max_negatives]
-                        for _ in range(n)
-                    ]
-                )
+                # Sample max_negatives columns per row without replacement.
+                rnd_idx = torch.rand(n, num_negatives, device=sim_m.device).argsort(dim=1)[
+                    :, : self.max_negatives
+                ]
                 sim_neg = torch.gather(sim_neg, 1, rnd_idx)
                 sim_m = torch.cat([sim_pos.unsqueeze(1), sim_neg], dim=1)
                 labels = torch.zeros(batch_size, dtype=torch.long, device=sim_m.device)
@@ -70,4 +68,8 @@ class TableContrastiveLoss(torch.nn.Module):
             )
             count += batch_size
 
-        return loss / count if count > 0 else torch.tensor(0.0)
+        if count > 0:
+            return loss / count
+
+        device = next(iter(x_dict.values())).device if x_dict else None
+        return torch.zeros((), device=device, requires_grad=True)

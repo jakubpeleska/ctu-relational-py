@@ -1,7 +1,10 @@
 # ReDeLEx
 
+[![CI](https://github.com/jakubpeleska/ReDeLEx/actions/workflows/ci.yml/badge.svg?branch=develop&event=push)](https://github.com/jakubpeleska/ReDeLEx/actions/workflows/ci.yml?query=branch%3Adevelop)
 [![website](https://img.shields.io/badge/website-live-brightgreen)](https://relational.fel.cvut.cz)
 [![PyPI version](https://img.shields.io/pypi/v/redelex?color=brightgreen)](https://pypi.org/project/redelex/)
+[![Python versions](https://img.shields.io/pypi/pyversions/redelex)](https://pypi.org/project/redelex/)
+[![arXiv](https://img.shields.io/badge/arXiv-2506.22199-b31b1b.svg)](https://arxiv.org/abs/2506.22199)
 [![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](https://opensource.org/licenses/MIT)
 
 **ReDeLEx** (Relational Deep Learning Exploration) is a Python framework for the development and evaluation of **Relational Deep Learning (RDL)** models. It enables end-to-end experimentation with graph-based neural networks on **relational databases (RDBs)**, building on the CTU Relational Learning Repository and fully integrating with the [RelBench](https://github.com/snap-stanford/relbench) interface.
@@ -105,7 +108,7 @@ ReDeLEx includes tools for:
 - Comparing RDL with traditional ML and propositionalization
 - Benchmarking across 70+ relational datasets from various domains
 
-For experimental results and performance benchmarks, see the [ECML PKDD 2025 paper](https://arxiv.org/abs/XXXX.XXXXX) _(coming soon)_.
+For experimental results and performance benchmarks, see the [ECML PKDD 2025 paper](https://arxiv.org/abs/2506.22199).
 
 ## ⚙️ Development
 
@@ -127,33 +130,53 @@ More info: [https://docs.astral.sh/uv/getting-started/installation/](https://doc
 
 ### Install dependencies
 
-CPU:
+Requires Python 3.12. Each command installs everything, including the compiled
+PyTorch Geometric extensions (`pyg-lib`, `torch-scatter`, `torch-sparse`).
+
+CPU (torch 2.9.1):
 
 ```bash
 uv sync
-uv pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-2.4.0+cpu.html
 ```
 
-CUDA 12.8:
+CUDA 12.8 (torch 2.9.1):
 
 ```bash
 uv sync --no-group cpu --group cu128
-uv pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-2.8.0+cu128.html
 ```
 
-CUDA 12.4 (Old CUDA env):
+CUDA 12.4 (old CUDA env, torch 2.4.1):
 
 ```bash
 uv sync --no-group cpu --group cu124
-uv pip install pyg_lib torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-2.4.0+cu124.html
 ```
 
-CUDA 12.1 (RCI Setup):
+The CUDA groups are Linux/Windows only, because the PyTorch Geometric extensions
+are not built for macOS against a CUDA torch; on macOS use the CPU group.
+
+### Run the tests
 
 ```bash
-uv sync --no-group cpu --group cu121
-uv pip install pyg_lib==0.3.1 torch_scatter torch_sparse torch_cluster torch_spline_conv -f https://data.pyg.org/whl/torch-2.1.2+cu121.html
+uv run pytest
 ```
+
+Tests that download every CTU database and build every task are excluded by
+default; run them explicitly with:
+
+```bash
+uv run pytest -m needs_network
+```
+
+Restrict them to a few databases with `REDELEX_SMOKE_DATASETS`:
+
+```bash
+REDELEX_SMOKE_DATASETS=ctu-financial,ctu-seznam uv run pytest -m needs_network
+```
+
+Every pull request and every push to `develop` runs the offline tests, the
+linter and a packaging check. The smoke tests are not automatic - trigger them
+from the **CTU smoke tests** workflow in the Actions tab, which takes the same
+comma-separated list of databases.
 
 ### Enable and run `pre-commit`
 

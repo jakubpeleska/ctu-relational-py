@@ -9,8 +9,10 @@ class TextEmbedder:
 
     def __init__(self, model_name: str, device: Optional[torch.device] = None):
         self.model = SentenceTransformer(model_name, device=device)
+        if getattr(self, "embedding_dim", None) is None:
+            self.embedding_dim = self.model.get_sentence_embedding_dimension()
 
-    def __call__(self, sentences: list[str], use_cache: bool = False) -> torch.Tensor:
+    def __call__(self, sentences: list[str]) -> torch.Tensor:
         return self.model.encode(sentences, convert_to_tensor=True)
 
 

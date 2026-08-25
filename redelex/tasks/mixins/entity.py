@@ -21,17 +21,8 @@ class EntityTaskMixin(BaseTask):
     entity_table: str
     target_col: str
     task_type: TaskType
-
-    # TODO: add proper metrics
-    @property
-    def metrics(self) -> list[Callable[[NDArray, NDArray], float]]:
-        if (
-            self.task_type == TaskType.REGRESSION
-            or self.task_type == TaskType.BINARY_CLASSIFICATION
-            or self.task_type == TaskType.MULTICLASS_CLASSIFICATION
-            or self.task_type == TaskType.MULTILABEL_CLASSIFICATION
-        ):
-            return []
+    metrics: list[Callable[[NDArray, NDArray], float]]
+    num_classes: Optional[int] = None
 
     def filter_dangling_entities(self, table: Table) -> Table:
         db = self.dataset.get_db()
@@ -51,6 +42,11 @@ class EntityTaskMixin(BaseTask):
     ) -> Dict[str, float]:
         if metrics is None:
             metrics = self.metrics
+            if not metrics:
+                raise NotImplementedError(
+                    "Default metrics are not defined for this task; pass "
+                    "`metrics` explicitly."
+                )
 
         if target_table is None:
             target_table = self.get_table("test", mask_input_cols=False)

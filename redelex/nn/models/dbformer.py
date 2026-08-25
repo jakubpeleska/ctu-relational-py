@@ -97,10 +97,15 @@ class DBFormer(torch.nn.Module):
                 for norm in norm_dict.values():
                     norm.reset_parameters()
 
+        if self.with_output_transform:
+            self.output_transform.reset_parameters()
+
     def forward(
         self,
         x_dict: Dict[NodeType, Tensor],
         edge_index_dict: Dict[NodeType, Tensor],
+        # Accepted for compatibility with PyG loaders that forward sampler
+        # metadata; per-layer trimming is not implemented.
         num_sampled_nodes_dict: Optional[Dict[NodeType, List[int]]] = None,
         num_sampled_edges_dict: Optional[Dict[EdgeType, List[int]]] = None,
     ) -> Dict[NodeType, Tensor]:
@@ -108,26 +113,28 @@ class DBFormer(torch.nn.Module):
             x_dict_next = {}
             # Apply self-attention
             for key in x_dict:
-                x_dict_next[key] = self.attn[i][key](x_dict[key])
+                x = self.attn[i][key](x_dict[key])
+                if self.with_residuals:
+                    x = x + x_dict[key]
                 if self.with_norm:
-                    x = x_dict_next[key]
-                    if self.with_residuals:
-                        # Optionally apply residuals
-                        x += x_dict[key]
-                    # Apply normalization
-                    x_dict_next[key] = self.attn_norm[i][key](x)
+                    x = self.attn_norm[i][key](x)
+                x_dict_next[key] = x
             # Update x_dict
             x_dict = x_dict_next
             # Apply cross-attention
             x_dict_next: Dict[str, Tensor] = self.convs[i](x_dict, edge_index_dict)
-            if self.with_norm:
-                for key in x_dict:
-                    x = x_dict_next[key]
-                    if self.with_residuals:
-                        # Optionally apply residuals
-                        x += x_dict[key]
-                    # Apply normalization
-                    x_dict_next[key] = self.conv_norm[i][key](x)
+            for key in x_dict:
+                # HeteroConv only returns node types that receive messages;
+                # pass the others through unchanged.
+                x = x_dict_next.get(key)
+                if x is None:
+                    x_dict_next[key] = x_dict[key]
+                    continue
+                if self.with_residuals:
+                    x = x + x_dict[key]
+                if self.with_norm:
+                    x = self.conv_norm[i][key](x)
+                x_dict_next[key] = x
             # Update x_dict
             x_dict = x_dict_next
 

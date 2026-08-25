@@ -59,7 +59,8 @@ def merge_tf(
         raise NotImplementedError("Only left join is supported.")
 
     num_rows = left_tf.num_rows
-    feat_dict = copy.deepcopy(left_tf.feat_dict)
+    # A shallow copy suffices: the tensors are only read and concatenated.
+    feat_dict = dict(left_tf.feat_dict)
     for st in right_tf.stypes:
         new_data = _init_stype_features(
             st,
@@ -69,7 +70,7 @@ def merge_tf(
             idx=left_idx,
         )
 
-        st_data = feat_dict.get(st, None)
+        st_data = feat_dict.get(st)
         feat_dict[st] = (
             new_data if st_data is None else _concat_features(st, [st_data, new_data])
         )

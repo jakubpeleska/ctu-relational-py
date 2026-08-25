@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [develop, main]
+
+# Supersede an in-flight run when the same ref is pushed again.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      # Keep the version in step with .pre-commit-config.yaml, otherwise the
+      # hook and this job can disagree about the same file.
+      - name: Ruff check
+        run: uvx ruff@0.15.6 check redelex tests
+
+      - name: Ruff format
+        run: uvx ruff@0.15.6 format --check redelex tests
+
+  test:
+    name: Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      # tests/test_visualize.py renders a schema to SVG and skips itself
+      # without the `dot` executable.
+      - name: Install Graphviz
+        run: sudo apt-get update && sudo apt-get install -y graphviz
+
+      # --locked fails if uv.lock has drifted from pyproject.toml, the same
+      # invariant the uv-lock pre-commit hook enforces. The Python version
+      # comes from .python-version, so the interpreter matches the lock.
+      - name: Install dependencies
+        run: uv sync --locked
+
+      # The network smoke tests are deselected by `addopts` in pyproject.toml.
+      - name: Run tests
+        run: uv run pytest
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      # Checks that flit can resolve the dynamic version from
+      # redelex/__init__.py and that the README renders on PyPI, before a
+      # release tag turns either into a failed publish.
+      - name: Build distributions
+        run: uv build
+
+      - name: Check distribution metadata
+        run: uvx twine check dist/*

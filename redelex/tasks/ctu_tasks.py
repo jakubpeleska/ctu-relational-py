@@ -11,7 +11,9 @@ class CTUEntityTaskTemporal(ImputeEntityTemporalTask):
     entity_col = "__PK__"
 
 
-# TODO: implement link prediction tasks, currently they are placeholders
+# TODO: implement link prediction tasks. The CTULinkTask subclasses below are
+# placeholders: they are intentionally NOT registered and NOT exported, and
+# will fail if instantiated.
 class CTULinkTask(ImputeEntityStaticTask):
     pass
 
@@ -25,12 +27,14 @@ class AccidentsOriginalTask(CTUEntityTask):
     entity_table = "nesreca"
     target_col = "klas_nesreca"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 6
 
 
 class AccidentsTemporalTask(CTUEntityTaskTemporal):
     entity_table = "nesreca"
     target_col = "klas_nesreca"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 6
 
 
 class AdventureWorksOriginalTask(CTUEntityTask):
@@ -63,6 +67,7 @@ class AtherosclerosisOriginalTask(CTUEntityTask):
     entity_table = "Entry"
     target_col = "STAV"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 5
 
 
 class BasketballMenOriginalTask(CTUEntityTask):
@@ -105,6 +110,7 @@ class ChessOriginalTask(CTUEntityTask):
     entity_table = "game"
     target_col = "game_result"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 3
 
 
 class ClassicModelsOriginalTask(CTUEntityTask):
@@ -123,6 +129,7 @@ class CORAOriginalTask(CTUEntityTask):
     entity_table = "paper"
     target_col = "class_label"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 7
 
 
 class CountriesOriginalTask(CTUEntityTask):
@@ -135,6 +142,7 @@ class CraftBeerOriginalTask(CTUEntityTask):
     entity_table = "breweries"
     target_col = "state"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 51
 
 
 # TODO: fix link prediction tasks
@@ -148,12 +156,14 @@ class DallasOriginalTask(CTUEntityTask):
     entity_table = "incidents"
     target_col = "subject_statuses"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 7
 
 
 class DallasTemporalTask(CTUEntityTaskTemporal):
     entity_table = "incidents"
     target_col = "subject_statuses"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 7
 
 
 class DCGOriginalTask(CTUEntityTask):
@@ -166,6 +176,7 @@ class DiabetesOriginalTask(CTUEntityTask):
     entity_table = "paper"
     target_col = "class_label"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 3
 
 
 # TODO: fix link prediction tasks
@@ -216,12 +227,14 @@ class FinancialOriginalTask(CTUEntityTask):
     entity_table = "loan"
     target_col = "status"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 4
 
 
 class FinancialTemporalTask(CTUEntityTaskTemporal):
     entity_table = "loan"
     target_col = "status"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 4
 
 
 class FNHKOriginalTask(CTUEntityTask):
@@ -264,6 +277,7 @@ class GenesOriginalTask(CTUEntityTask):
     entity_table = "Classification"
     target_col = "Localization"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 15
 
 
 class GOSalesOriginalTask(CTUEntityTask):
@@ -300,12 +314,14 @@ class HockeyOriginalTask(CTUEntityTask):
     entity_table = "Master"
     target_col = "shootCatch"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 3
 
 
 class HockeyTemporalTask(CTUEntityTaskTemporal):
     entity_table = "Master"
     target_col = "shootCatch"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 3
 
 
 class IMDbOriginalTask(CTUEntityTask):
@@ -336,18 +352,21 @@ class LegalActsOriginalTask(CTUEntityTask):
     entity_table = "legalacts"
     target_col = "ActKind"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 7
 
 
 class LegalActsTemporalTask(CTUEntityTaskTemporal):
     entity_table = "legalacts"
     target_col = "ActKind"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 7
 
 
 class MeshOriginalTask(CTUEntityTask):
     entity_table = "mesh"
     target_col = "num"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 11
 
 
 class MondialOriginalTask(CTUEntityTask):
@@ -420,12 +439,14 @@ class PremiereLeagueOriginalTask(CTUEntityTask):
     entity_table = "Matches"
     target_col = "ResultOfTeamHome"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 3
 
 
 class PremiereLeagueTemporalTask(CTUEntityTaskTemporal):
     entity_table = "Matches"
     target_col = "ResultOfTeamHome"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 3
 
 
 class RestbaseOriginalTask(CTUEntityTask):
@@ -480,7 +501,6 @@ class SAPSalesTemporalTask(CTUEntityTaskTemporal):
 # TODO: fix link prediction tasks
 class SatelliteOriginalTask(CTULinkTask):
     entity_table = "tm"
-    link_table = "fault"
     task_type = TaskType.LINK_PREDICTION
 
 
@@ -511,7 +531,6 @@ class SFScoresTemporalTask(CTUEntityTaskTemporal):
 # TODO: fix link prediction tasks
 class ShakespeareOriginalTask(CTULinkTask):
     entity_table = "paragraphs"
-    link_table = "characters"
     task_type = TaskType.LINK_PREDICTION
 
 
@@ -537,12 +556,14 @@ class ThrombosisOriginalTask(CTUEntityTask):
     entity_table = "Examination"
     target_col = "Thrombosis"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 4
 
 
 class ThrombosisTemporalTask(CTUEntityTaskTemporal):
     entity_table = "Examination"
     target_col = "Thrombosis"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 4
 
 
 class ToxicologyOriginalTask(CTUEntityTask):
@@ -561,12 +582,14 @@ class TPCDOriginalTask(CTUEntityTask):
     entity_table = "dss_customer"
     target_col = "c_mktsegment"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 5
 
 
 class TPCDTemporalTask(CTUEntityTaskTemporal):
     entity_table = "dss_customer"
     target_col = "c_mktsegment"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 5
 
 
 class TPCDSOriginalTask(CTUEntityTask):
@@ -603,24 +626,28 @@ class UWCSEOriginalTask(CTUEntityTask):
     entity_table = "person"
     target_col = "inPhase"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 4
 
 
 class VisualGenomeOriginalTask(CTUEntityTask):
     entity_table = "IMG_OBJ"
     target_col = "OBJ_CLASS"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 300
 
 
 class VOCOriginalTask(CTUEntityTask):
     entity_table = "voyages"
     target_col = "arrival_harbour"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 61
 
 
 class VOCTemporalTask(CTUEntityTaskTemporal):
     entity_table = "voyages"
     target_col = "arrival_harbour"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 61
 
 
 class WalmartOriginalTask(CTUEntityTask):
@@ -639,12 +666,14 @@ class WebKPOriginalTask(CTUEntityTask):
     entity_table = "webpage"
     target_col = "class_label"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 5
 
 
 class WorldOriginalTask(CTUEntityTask):
     entity_table = "Country"
     target_col = "Continent"
     task_type = TaskType.MULTICLASS_CLASSIFICATION
+    num_classes = 7
 
 
 # fmt: off
@@ -661,17 +690,14 @@ __all__ = [
     "CDESchoolsOriginalTask", 
     "ChessOriginalTask", 
     "ClassicModelsOriginalTask", "ClassicModelsTemporalTask",
-    "CORAOriginalTask", 
-    "CountriesOriginalTask", 
-    "CraftBeerOriginalTask", 
-    "CreditOriginalTask", 
+    "CORAOriginalTask",
+    "CountriesOriginalTask",
+    "CraftBeerOriginalTask",
     "DallasOriginalTask", "DallasTemporalTask",
-    "DCGOriginalTask", 
+    "DCGOriginalTask",
     "DiabetesOriginalTask",
-    "DunurOriginalTask", 
-    "EltiOriginalTask", 
     "EmployeeOriginalTask", "EmployeeTemporalTask",
-    "ErgastF1OriginalTask", "ErgastF1TemporalTask",
+    "ErgastF1OriginalTask",
     "ExpendituresOriginalTask", 
     "FinancialOriginalTask", "FinancialTemporalTask",
     "FNHKOriginalTask", "FNHKTemporalTask",
@@ -680,39 +706,35 @@ __all__ = [
     "GenesOriginalTask", 
     "GOSalesOriginalTask", "GOSalesTemporalTask",
     "GrantsOriginalTask", "GrantsTemporalTask",
-    "HepatitisOriginalTask", 
-    "HockeyOriginalTask", "HockeyTemporalTask",
-    "IMDbOriginalTask", "IMDbTemporalTask",
+    "HepatitisOriginalTask",
+    "HockeyOriginalTask",
+    "IMDbOriginalTask",
     "LahmanOriginalTask", "LahmanTemporalTask",
     "LegalActsOriginalTask", "LegalActsTemporalTask",
-    "MeshOriginalTask", 
-    "MondialOriginalTask", 
-    "MooneyOriginalTask", 
-    "MovieLensOriginalTask", 
-    "MuskLargeOriginalTask", 
-    "MuskSmallOriginalTask", 
+    "MeshOriginalTask",
+    "MondialOriginalTask",
+    "MovieLensOriginalTask",
+    "MuskLargeOriginalTask",
+    "MuskSmallOriginalTask",
     "MutagenesisOriginalTask",
-    "NCAAOriginalTask", "NCAATemporalTask",
+    "NCAAOriginalTask",
     "NorthwindOriginalTask", "NorthwindTemporalTask",
     "PimaOriginalTask", 
     "PremiereLeagueOriginalTask", "PremiereLeagueTemporalTask",
     "RestbaseOriginalTask",
     "SakilaOriginalTask", "SakilaTemporalTask",
-    "SalesOriginalTask", 
-    "SameGenOriginalTask", 
+    "SalesOriginalTask",
     "SAPOriginalTask", "SAPSalesTask", "SAPSalesTemporalTask",
-    "SatelliteOriginalTask", 
     "SeznamOriginalTask", "SeznamTemporalTask",
     "SFScoresOriginalTask", "SFScoresTemporalTask",
-    "ShakespeareOriginalTask", 
     "StatsOriginalTask", "StatsTemporalTask",
-    "StudentLoanOriginalTask", 
-    "ThrombosisOriginalTask", "ThrombosisTemporalTask",
+    "StudentLoanOriginalTask",
+    "ThrombosisOriginalTask",
     "ToxicologyOriginalTask",
-    "TPCCOriginalTask", 
-    "TPCDOriginalTask", "TPCDTemporalTask",
+    "TPCCOriginalTask",
+    "TPCDOriginalTask",
     "TPCDSOriginalTask", "TPCDSTemporalTask",
-    "TPCHOriginalTask", "TPCHTemporalTask",
+    "TPCHOriginalTask",
     "TriazineOriginalTask",
     "UWCSEOriginalTask", 
     "VisualGenomeOriginalTask", 

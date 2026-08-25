@@ -9,6 +9,13 @@ from .entity import EntityTaskMixin
 
 class ImputeEntityTaskMixin(ModifyDBTaskMixin, EntityTaskMixin):
     r"""Mixin class for allowing to modify underlying database for a task.
+
+    Classification targets are label-encoded over the sorted unique values of
+    the target column. Rows with a missing target value are encoded with the
+    sentinel label ``-1`` and are not dropped; downstream consumers must mask
+    or filter them. The sentinel is not a class, so it is not counted by
+    :attr:`num_classes`.
+
     Attributes:
         removed_entity_cols: list of entity columns to be removed from the
             entity table.
@@ -32,6 +39,13 @@ class ImputeEntityTaskMixin(ModifyDBTaskMixin, EntityTaskMixin):
             _, target_values = df[self.target_col].factorize(
                 sort=True, use_na_sentinel=True
             )
+
+            if self.task_type == TaskType.BINARY_CLASSIFICATION and len(target_values) != 2:
+                raise ValueError(
+                    f"Binary classification target '{self.target_col}' must have "
+                    f"exactly 2 categories, found {len(target_values)}: "
+                    f"{list(target_values[:10])}"
+                )
 
             def target_map(x):
                 if pd.isna(x):
@@ -59,7 +73,9 @@ class ImputeEntityTaskMixin(ModifyDBTaskMixin, EntityTaskMixin):
             A modified database.
         """
 
-        remove_cols = list(set([self.target_col, *self.removed_entity_cols]))
+        remove_cols = set([self.target_col, *self.removed_entity_cols])
+        # Tolerate repeated invocation on the same database object.
+        remove_cols &= set(db.table_dict[self.entity_table].df.columns)
 
         db.table_dict[self.entity_table].df.drop(columns=remove_cols, inplace=True)
 
