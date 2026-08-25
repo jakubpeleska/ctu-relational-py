@@ -1,7 +1,10 @@
 # ReDeLEx
 
+[![CI](https://github.com/jakubpeleska/ReDeLEx/actions/workflows/ci.yml/badge.svg?branch=develop&event=push)](https://github.com/jakubpeleska/ReDeLEx/actions/workflows/ci.yml?query=branch%3Adevelop)
 [![website](https://img.shields.io/badge/website-live-brightgreen)](https://relational.fel.cvut.cz)
 [![PyPI version](https://img.shields.io/pypi/v/redelex?color=brightgreen)](https://pypi.org/project/redelex/)
+[![Python versions](https://img.shields.io/pypi/pyversions/redelex)](https://pypi.org/project/redelex/)
+[![arXiv](https://img.shields.io/badge/arXiv-2506.22199-b31b1b.svg)](https://arxiv.org/abs/2506.22199)
 [![License: MIT](https://img.shields.io/badge/License-MIT-brightgreen.svg)](https://opensource.org/licenses/MIT)
 
 **ReDeLEx** (Relational Deep Learning Exploration) is a Python framework for the development and evaluation of **Relational Deep Learning (RDL)** models. It enables end-to-end experimentation with graph-based neural networks on **relational databases (RDBs)**, building on the CTU Relational Learning Repository and fully integrating with the [RelBench](https://github.com/snap-stanford/relbench) interface.
@@ -163,6 +166,17 @@ default; run them explicitly with:
 ```bash
 uv run pytest -m needs_network
 ```
+
+Restrict them to a few databases with `REDELEX_SMOKE_DATASETS`:
+
+```bash
+REDELEX_SMOKE_DATASETS=ctu-financial,ctu-seznam uv run pytest -m needs_network
+```
+
+Every pull request and every push to `develop` runs the offline tests, the
+linter and a packaging check. The smoke tests are not automatic - trigger them
+from the **CTU smoke tests** workflow in the Actions tab, which takes the same
+comma-separated list of databases.
 
 ### Enable and run `pre-commit`
 
