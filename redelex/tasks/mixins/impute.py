@@ -38,7 +38,9 @@ class ImputeEntityTaskMixin(ModifyDBTaskMixin, EntityTaskMixin):
         r"""Number of target classes, or None for non-classification tasks.
 
         The classes are the sorted unique non-missing values of the target
-        column, i.e. the same encoding the task tables use.
+        column, i.e. the same encoding the task tables use. Reading this the
+        first time therefore builds the database, which downloads it unless it
+        is already cached.
         """
         if self.task_type not in [
             TaskType.BINARY_CLASSIFICATION,
