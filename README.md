@@ -148,6 +148,9 @@ CUDA 12.4 (old CUDA env, torch 2.4.1):
 uv sync --no-group cpu --group cu124
 ```
 
+The CUDA groups are Linux/Windows only, because the PyTorch Geometric extensions
+are not built for macOS against a CUDA torch; on macOS use the CPU group.
+
 ### Run the tests
 
 ```bash
