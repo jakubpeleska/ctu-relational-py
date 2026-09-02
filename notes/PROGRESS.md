@@ -13,11 +13,12 @@ Priority: (1) integrate real CL techniques, (2) add datasets or rigorously argue
 | Step | Status |
 |---|---|
 | Cross-session persistence (`notes/`) | DONE 2026-09-02 |
-| 0f. rel-stack + rel-amazon downloads | RUNNING (bg) |
-| 0a. Commit the working tree | IN PROGRESS |
-| 0d. Robustness fixes | TODO |
+| 0a. Commit the working tree | DONE - 6 commits, tree clean |
+| 0d. Robustness fixes | DONE - seeds/mlflow_uri/trial-tolerance |
+| 0f. rel-stack download | DB INSTALLED (stale-hash workaround, NEEDS USER OK) |
+| 0f. rel-amazon download | RUNNING (bg) |
+| 0b. Port verification vs MLflow (GATE) | RUNNING on 4 GPUs |
 | 0c. Local multi-GPU runner | TODO |
-| 0b. Port verification vs MLflow (GATE) | TODO |
 | Phase 1: CL methods | TODO |
 
 ## Key context a new session needs
@@ -42,8 +43,14 @@ rel-amazon: unknown, gated on download.
 
 ## Blocked / needs the user
 
-- (none currently)
+- **rel-stack stale SHA256.** relbench 2.1.1 pins `f1374fda...` for `rel-stack/db.zip`, but the
+  server now serves a file hashing to `5a97bf65...`. Verified NOT corruption: two independent
+  downloads (pooch's and a separate curl) produced the identical `5a97bf65...` digest. The DB is
+  installed and loads fine (span 2009-02-02 -> 2023-09-03). To make `download=True` work, a
+  `apply_stale_hash_overrides()` helper was added to `experiments/continuous_learning/utils.py`
+  that rewrites the pin in `DOWNLOAD_REGISTRY`. **Overriding an integrity check needs an explicit
+  human decision** - the alternative is always calling rel-stack with `download=False`.
 
 ## Next action
 
-Finish 0a (commit), then 0d robustness fixes, then 0c runner, then the 0b verification gate.
+Await the 0b verification gate result, then build 0c (local multi-GPU runner), then Phase 1.

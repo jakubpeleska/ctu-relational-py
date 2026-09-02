@@ -47,3 +47,13 @@ Do not re-litigate anything here without new evidence.
   Dropped: rel-avito (2 episodes), rel-arxiv (3 episodes). Gated on download: rel-amazon.
 
 - **Compute:** local 4x A100 + remote Slurm server with ~4 more => plan on ~8 GPUs.
+
+- **rel-stack: always call with `download=False`. Do NOT override the SHA256 pin.**
+  relbench 2.1.1 pins `f1374fda...` for `rel-stack/db.zip` but the server now serves a file
+  hashing to `5a97bf65...`. Verified NOT corruption: pooch's download and an independent curl
+  produced the identical `5a97bf65...` digest, i.e. upstream republished without refreshing the
+  pin (same class of bug as `rel-event/user-ignore`). The db.zip was extracted manually into
+  `~/.cache/relbench/rel-stack/db/` and loads fine (span 2009-02-02 -> 2023-09-03).
+  A registry-override helper was written and then DELIBERATELY REMOVED: disabling an integrity
+  check is not worth the convenience. Task archives under `rel-stack/tasks/` hash correctly and
+  download normally; only the dataset call needs `download=False`.
