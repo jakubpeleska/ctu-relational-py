@@ -1,3 +1,4 @@
+from redelex.continual.replay import ReservoirBuffer, herding_select
 from redelex.continual.metrics import (
     average_accuracy,
     backward_transfer,
@@ -8,6 +9,8 @@ from redelex.continual.metrics import (
 )
 
 __all__ = [
+    "ReservoirBuffer",
+    "herding_select",
     "average_accuracy",
     "backward_transfer",
     "evaluation_matrix_from_predictions",
