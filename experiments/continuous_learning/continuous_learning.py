@@ -56,10 +56,11 @@ def get_resume_state_from_mlflow(
     task_name: str,
     val_metric: str,
     higher_is_better: bool,
+    mlflow_uri: Optional[str] = None,
 ) -> tuple[int, Optional[str]]:
     """Queries MLFlow to find the last completed increment and the best weights path."""
     try:
-        mlflow_client = get_potato_client()
+        mlflow_client = get_potato_client(mlflow_uri)
         runs = get_experiment_runs_df(
             mlflow_client,
             mlflow_experiment,
@@ -358,6 +359,7 @@ def run_ray_tuner(
     num_gpus: int = 0,
     num_cpus: int = 1,
     random_seed: int = 42,
+    seeds: Optional[list[int]] = None,
     cache_dir: str = ".cache",
     model_save_dir: str = "./models",
     resume: bool = False,
@@ -365,6 +367,16 @@ def run_ray_tuner(
     random.seed(random_seed)
     np.random.seed(random_seed)
     torch.manual_seed(random_seed)
+
+    # Per-trial seeds are fixed up front rather than drawn lazily by
+    # `tune.randint` inside the episode loop. The values are identical to the
+    # legacy draw (seed 42 -> [102, 435, 860, 270, 106]), but pinning them here
+    # means every episode uses the same seed set and `--resume` cannot shift the
+    # sequence, which previously gave resumed runs different seeds.
+    if seeds is None:
+        seeds = [int(x) for x in np.random.randint(0, 1000, num_samples)]
+    seeds = list(seeds)
+    print(f"Per-trial seeds ({len(seeds)}): {seeds}", flush=True)
 
     # Keep the script runnable without an MLflow server configured: an explicit
     # None would otherwise reach MLflow as the literal experiment name "None".
@@ -418,7 +430,8 @@ def run_ray_tuner(
     
     if resume:
         resume_inc, resume_weights_path = get_resume_state_from_mlflow(
-            mlflow_experiment, dataset_name, task_name, val_metric, higher_is_better
+            mlflow_experiment, dataset_name, task_name, val_metric, higher_is_better,
+            mlflow_uri=mlflow_uri,
         )
         if resume_inc > 1 and resume_weights_path is not None:
             start_inc = resume_inc
@@ -450,7 +463,8 @@ def run_ray_tuner(
                 log_to_file=True,
             ),
             tune_config=tune.TuneConfig(
-                num_samples=num_samples,
+                # seeds are a grid_search axis, so one sample per seed
+                num_samples=1,
                 trial_name_creator=lambda trial: (
                     f"{dataset_name}_{task_name}_{i}_{trial.trial_id}"
                 ),
@@ -461,7 +475,7 @@ def run_ray_tuner(
                 "dataset_name": dataset_name,
                 "task_name": task_name,
                 "learning_mode": current_learning_mode,
-                "seed": tune.randint(0, 1000),
+                "seed": tune.grid_search(seeds),
                 "text_embedder_name": "glove",
                 "mlflow_experiment": mlflow_experiment,
                 "mlflow_uri": mlflow_uri,
@@ -484,10 +498,19 @@ def run_ray_tuner(
             },
         )
         results = tuner.fit()
-        
+
+        # A single flaky trial must not kill the whole episode chain: a sweep can
+        # run for days, and the chain only truly fails when no trial survived to
+        # produce weights for the next episode.
         if results.errors:
-            print(f"Errors encountered in split {i}. Stopping continuous learning.")
-            break
+            n_failed = sum(1 for e in results.errors if e is not None)
+            print(
+                f"Increment {i}: {n_failed}/{len(results)} trials failed; "
+                f"continuing with the survivors."
+            )
+            if n_failed >= len(results):
+                print(f"All trials failed in split {i}. Stopping continuous learning.")
+                break
 
         best_result = results.get_best_result(metric=f"val_{val_metric}", mode="max" if higher_is_better else "min")
         if best_result is None or "model_save_dir" not in best_result.metrics:
@@ -506,6 +529,11 @@ if __name__ == "__main__":
     parser.add_argument("--ray_storage", type=str, default=None)
     parser.add_argument("--run_name", type=str, default=None)
     parser.add_argument("--mlflow_uri", type=str, default=None)
+    parser.add_argument(
+        "--seeds", type=int, nargs="*", default=None,
+        help="Explicit per-trial seeds. Defaults to num_samples values drawn "
+             "deterministically from --seed, matching the original runs.",
+    )
     parser.add_argument("--mlflow_experiment", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num_samples", type=int, default=1)
@@ -532,6 +560,7 @@ if __name__ == "__main__":
         ),
         ray_experiment_name=args.run_name,
         mlflow_uri=args.mlflow_uri,
+        seeds=args.seeds,
         mlflow_experiment=args.mlflow_experiment,
         random_seed=args.seed,
         num_samples=args.num_samples,

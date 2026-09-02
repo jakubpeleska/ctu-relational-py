@@ -34,8 +34,12 @@ from redelex.transforms import AttachTargetTransform
 from redelex.utils.datetime import to_unix_time
 
 
-def get_potato_client():
-    return MlflowClient(tracking_uri="http://potato.felk.cvut.cz:2222")
+DEFAULT_MLFLOW_URI = "http://potato.felk.cvut.cz:2222"
+
+
+def get_potato_client(tracking_uri: Optional[str] = None):
+    """MLflow client for the group server, or for `tracking_uri` when given."""
+    return MlflowClient(tracking_uri=tracking_uri or DEFAULT_MLFLOW_URI)
 
 
 def get_experiment_runs(client: MlflowClient, experiment_name: str, filter_string: str = "status != 'FAILED'") -> list[Run]:
