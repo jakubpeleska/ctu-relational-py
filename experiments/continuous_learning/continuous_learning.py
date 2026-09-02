@@ -35,6 +35,7 @@ import redelex.tasks.mixins as task_mixin
 from redelex.data import make_pkey_fkey_graph
 from redelex.loaders import ComposedLoader
 from redelex.nn.train import LightningEntityTaskWrapper, SaveModelCallback
+from redelex.nn.train.utils import get_metrics
 
 from experiments.continuous_learning.continuous_task import ContinuousWrapper
 
@@ -256,22 +257,27 @@ def run_continuous_learning_experiment(
     )
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, "min", factor=0.5, patience=3
+    
+    _, val_metric, higher_is_better = get_metrics(
+        task.task_type, num_classes=getattr(task, "num_classes", None)
     )
 
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, "max" if higher_is_better else "min", factor=0.5, patience=3
+    )
+    
     lightning_model = LightningEntityTaskWrapper(
         model=model,
         task=task,
         optimizer=optimizer,
         lr_scheduler_config={
             "scheduler": scheduler,
-            "monitor": "val_loss_epoch",
-            "mode": "min",
+            "monitor": f"val_{val_metric}",
+            "mode": "max" if higher_is_better else "min",
             "interval": "epoch",
             "frequency": 1,
         },
+        modes=("val",)
     )
 
     model_summary = ModelSummary(lightning_model, max_depth=2)
@@ -360,6 +366,11 @@ def run_ray_tuner(
     np.random.seed(random_seed)
     torch.manual_seed(random_seed)
 
+    # Keep the script runnable without an MLflow server configured: an explicit
+    # None would otherwise reach MLflow as the literal experiment name "None".
+    if not mlflow_experiment:
+        mlflow_experiment = f"cl_{learning_mode}"
+
     if num_gpus > 0 and ray_address == "local":
         from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo
 
@@ -391,7 +402,9 @@ def run_ray_tuner(
 
     task = get_task(dataset_name, task_name)
     wrapped_task = ContinuousWrapper(task)
-
+    _, val_metric, higher_is_better = get_metrics(
+        task.task_type, num_classes=getattr(task, "num_classes", None)
+    )
     splits = copy.deepcopy(wrapped_task.get_splits())
     del wrapped_task
     del task
@@ -421,9 +434,9 @@ def run_ray_tuner(
     for i in range(start_inc, len(splits) - 1):
         train_timestamp = splits[i]
         val_timestamp = splits[i+1]
-        prev_train_timestamp = splits[i-1] if i > 0 else None
+        prev_train_timestamp = splits[i-1] if i > 1 else None
         
-        current_learning_mode = "from_scratch" if i == 0 else learning_mode
+        current_learning_mode = "from_scratch" if i == 1 else learning_mode
 
         tuner = tune.Tuner(
             tune.with_resources(
@@ -476,12 +489,13 @@ def run_ray_tuner(
             print(f"Errors encountered in split {i}. Stopping continuous learning.")
             break
 
-        best_result = results.get_best_result(metric="val_loss_epoch", mode="min")
+        best_result = results.get_best_result(metric=f"val_{val_metric}", mode="max" if higher_is_better else "min")
         if best_result is None or "model_save_dir" not in best_result.metrics:
             print(f"Failed to find the best result in split {i}. Stopping.")
             break
         
         best_weights_path = f"{best_result.metrics['model_save_dir']}/best_model.pt"
+
 
 
 if __name__ == "__main__":
