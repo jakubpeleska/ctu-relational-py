@@ -358,6 +358,7 @@ def run_ray_tuner(
     num_samples: Optional[int] = 1,
     num_gpus: int = 0,
     num_cpus: int = 1,
+    gpu_ids: Optional[list[int]] = None,
     random_seed: int = 42,
     seeds: Optional[list[int]] = None,
     cache_dir: str = ".cache",
@@ -383,7 +384,15 @@ def run_ray_tuner(
     if not mlflow_experiment:
         mlflow_experiment = f"cl_{learning_mode}"
 
-    if num_gpus > 0 and ray_address == "local":
+    if gpu_ids:
+        # Explicit pinning, for an external scheduler that owns the allocation
+        # (see scripts/run_grid.py). Skips the auto-selection below, which would
+        # otherwise renumber CUDA_VISIBLE_DEVICES relative to the visible set and
+        # land the job on the wrong physical device.
+        os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(str(g) for g in gpu_ids)
+        num_gpus = min(num_gpus, len(gpu_ids)) or len(gpu_ids)
+        print(f"Pinned to GPUs {os.environ['CUDA_VISIBLE_DEVICES']}")
+    elif num_gpus > 0 and ray_address == "local":
         from pynvml import nvmlInit, nvmlDeviceGetHandleByIndex, nvmlDeviceGetMemoryInfo
 
         nvmlInit()
@@ -538,6 +547,11 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num_samples", type=int, default=1)
     parser.add_argument("--num_gpus", type=int, default=0)
+    parser.add_argument(
+        "--gpu_ids", type=int, nargs="*", default=None,
+        help="Physical GPU ids to pin this run to, bypassing free-memory "
+             "auto-selection. Use when an external scheduler owns the allocation.",
+    )
     parser.add_argument("--num_cpus", type=int, default=1)
     parser.add_argument("--learning_mode", type=str, choices=["from_scratch", "ft_full", "ft_upsample", "ft_newonly"], default="from_scratch")
     parser.add_argument("--model_save_dir", type=str, default="./models")
@@ -561,6 +575,7 @@ if __name__ == "__main__":
         ray_experiment_name=args.run_name,
         mlflow_uri=args.mlflow_uri,
         seeds=args.seeds,
+        gpu_ids=args.gpu_ids,
         mlflow_experiment=args.mlflow_experiment,
         random_seed=args.seed,
         num_samples=args.num_samples,
