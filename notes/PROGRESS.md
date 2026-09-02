@@ -15,10 +15,10 @@ Priority: (1) integrate real CL techniques, (2) add datasets or rigorously argue
 | Cross-session persistence (`notes/`) | DONE 2026-09-02 |
 | 0a. Commit the working tree | DONE - 6 commits, tree clean |
 | 0d. Robustness fixes | DONE - seeds/mlflow_uri/trial-tolerance |
-| 0f. rel-stack download | DB INSTALLED (stale-hash workaround, NEEDS USER OK) |
-| 0f. rel-amazon download | RUNNING (bg) |
+| 0f. rel-stack download + probe | DONE - 53 episodes, use download=False |
+| 0f. rel-amazon download + probe | DONE - 61 episodes, span 2008-2018 |
 | 0b. Port verification vs MLflow (GATE) | RUNNING on 4 GPUs |
-| 0c. Local multi-GPU runner | TODO |
+| 0c. Local multi-GPU runner | DONE - scripts/run_grid.py |
 | Phase 1: CL methods | TODO |
 
 ## Key context a new session needs
@@ -37,19 +37,15 @@ Priority: (1) integrate real CL techniques, (2) add datasets or rigorously argue
 
 ## Measured episode counts (NOT metadata ceilings — those ran ~2.5x high)
 
-rel-hm 52/52 | rel-stack 18/18/17 | rel-ratebeer 12/12/12/9 | rel-f1 11/11/2 | rel-trial 7/7/7
-rel-event 10/9 (corrupt DB span 1912->2222, usable w/ caveat) | rel-arxiv 3 (drop) | rel-avito 2 (drop)
-rel-amazon: unknown, gated on download.
+ALL MEASURED - see `analysis/dataset-episodes-measured.md` for the full table.
+rel-hm 52/52 (104) | rel-stack 18/18/17 (53) | rel-amazon 15/15/15/16 (61) |
+rel-ratebeer 12/12/12/9 (45) | rel-f1 11/11/2 (24) | rel-trial 7/7/7 (21) |
+rel-event 10/9 (corrupt DB span, caveat) | rel-arxiv 3 (drop) | rel-avito 2 (drop)
+rel-stack and rel-f1/rel-trial counts independently confirmed against the published MLflow grid.
 
 ## Blocked / needs the user
 
-- **rel-stack stale SHA256.** relbench 2.1.1 pins `f1374fda...` for `rel-stack/db.zip`, but the
-  server now serves a file hashing to `5a97bf65...`. Verified NOT corruption: two independent
-  downloads (pooch's and a separate curl) produced the identical `5a97bf65...` digest. The DB is
-  installed and loads fine (span 2009-02-02 -> 2023-09-03). To make `download=True` work, a
-  `apply_stale_hash_overrides()` helper was added to `experiments/continuous_learning/utils.py`
-  that rewrites the pin in `DOWNLOAD_REGISTRY`. **Overriding an integrity check needs an explicit
-  human decision** - the alternative is always calling rel-stack with `download=False`.
+- (none currently) - the rel-stack hash question is settled, see DECISIONS.md.
 
 ## Next action
 
