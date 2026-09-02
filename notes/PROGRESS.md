@@ -17,9 +17,15 @@ Priority: (1) integrate real CL techniques, (2) add datasets or rigorously argue
 | 0d. Robustness fixes | DONE - seeds/mlflow_uri/trial-tolerance |
 | 0f. rel-stack download + probe | DONE - 53 episodes, use download=False |
 | 0f. rel-amazon download + probe | DONE - 61 episodes, span 2008-2018 |
-| 0b. Port verification vs MLflow (GATE) | RUNNING on 4 GPUs |
+| 0b. Port verification vs MLflow (GATE) | PASSING - ep1 gap 0.78%, ep 8-11 still running |
 | 0c. Local multi-GPU runner | DONE - scripts/run_grid.py |
-| Phase 1: CL methods | TODO |
+| Phase 1: CL metrics (ACC/BWT/FWT/forgetting + decay) | DONE - redelex/continual/metrics.py |
+| Phase 1: Replay family (reservoir + herding) | DONE - redelex/continual/replay.py |
+| Phase 1: Regularisation family (EWC) | DONE - redelex/continual/regularization.py |
+| Phase 1: Wire CL families into the experiment script | TODO - next |
+| Phase 1: Parameter isolation family | TODO |
+| Phase 1: LwF distillation | TODO |
+| Phase 2: HeteroGAT backbone seam, dI ablation | TODO |
 
 ## Key context a new session needs
 
@@ -47,6 +53,24 @@ rel-stack and rel-f1/rel-trial counts independently confirmed against the publis
 
 - (none currently) - the rel-stack hash question is settled, see DECISIONS.md.
 
+## Port fidelity result (the gate)
+
+`scripts/compare_to_published.py` vs MLflow experiment 92, rel-f1 driver-position, best_val_mae:
+
+| ep | published | candidate | gap |
+|---|---|---|---|
+| 1 | 5.8383 +/- 0.0137 | 5.8838 +/- 0.0468 | 0.78% |
+| 2 | 5.9045 +/- 0.0450 | 5.9401 +/- 0.0375 | 0.60% |
+| 3 | 4.2773 +/- 0.0209 | 4.2593 +/- 0.0071 | 0.42% |
+| 4 | 4.5775 +/- 0.0571 | 4.5989 +/- 0.0368 | 0.47% |
+| 5 | 5.2796 +/- 0.0398 | 5.2001 +/- 0.0692 | 1.50% |
+
+Episode 1 is the gate (same window, same seeds, from scratch). PASS.
+Published episode 11 is 3.1107, essentially the paper's Table 2 Scratch MAE of 3.106.
+
 ## Next action
 
-Await the 0b verification gate result, then build 0c (local multi-GPU runner), then Phase 1.
+1. Wire the three CL families into `continuous_learning.py` as new `--learning_mode` values
+   (replay_reservoir, replay_herding, ewc), threading buffer/anchor state episode-to-episode
+   the same way `weights_path` already is (`:497` -> `:474` -> `:200-201`).
+2. Then parameter isolation + LwF, then launch Tier A (45 episodes, ~71 GPU-h, <1 day).
