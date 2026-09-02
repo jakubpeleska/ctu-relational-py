@@ -1,3 +1,4 @@
+from redelex.continual.regularization import ParameterAnchor, fisher_diagonal
 from redelex.continual.replay import ReservoirBuffer, herding_select
 from redelex.continual.metrics import (
     average_accuracy,
@@ -9,6 +10,8 @@ from redelex.continual.metrics import (
 )
 
 __all__ = [
+    "ParameterAnchor",
+    "fisher_diagonal",
     "ReservoirBuffer",
     "herding_select",
     "average_accuracy",
