@@ -1,3 +1,4 @@
+import time
 import warnings
 from pathlib import Path
 from typing import Optional
@@ -84,4 +85,72 @@ class SaveModelCallback(L.Callback):
             torch.save(pl_module.model.state_dict(), f"{self.save_dir}/best_model.pt")
 
 
-__all__ = ["SaveModelCallback"]
+class PhaseTimerCallback(L.Callback):
+    r"""Accumulates wall-clock time spent training versus validating.
+
+    Training cost here is bounded by a fixed step budget, but validation cost is
+    not: it scales with the size of the validation window and with how often
+    validation runs. On large datasets that can dominate a run, so the split is
+    worth measuring rather than assuming.
+
+    Logs ``time_train_s``, ``time_val_s``, ``n_val_passes`` and
+    ``val_time_fraction`` at the end of training.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.train_seconds = 0.0
+        self.val_seconds = 0.0
+        self.n_val_passes = 0
+        self.n_train_batches = 0
+        self.n_val_batches = 0
+        self._train_start: Optional[float] = None
+        self._val_start: Optional[float] = None
+
+    # -- training ---------------------------------------------------------
+    def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
+        self._train_start = time.perf_counter()
+
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        if self._train_start is not None:
+            self.train_seconds += time.perf_counter() - self._train_start
+            self._train_start = None
+        self.n_train_batches += 1
+
+    # -- validation -------------------------------------------------------
+    def on_validation_start(self, trainer, pl_module):
+        self._val_start = time.perf_counter()
+
+    def on_validation_end(self, trainer, pl_module):
+        if self._val_start is not None:
+            self.val_seconds += time.perf_counter() - self._val_start
+            self._val_start = None
+        if not trainer.sanity_checking:
+            self.n_val_passes += 1
+
+    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx=0):
+        self.n_val_batches += 1
+
+    # -- summary ----------------------------------------------------------
+    def summary(self) -> dict:
+        total = self.train_seconds + self.val_seconds
+        return {
+            "time_train_s": round(self.train_seconds, 2),
+            "time_val_s": round(self.val_seconds, 2),
+            "n_val_passes": self.n_val_passes,
+            "n_train_batches": self.n_train_batches,
+            "n_val_batches": self.n_val_batches,
+            "val_time_fraction": round(self.val_seconds / total, 4) if total > 0 else 0.0,
+        }
+
+    def on_fit_end(self, trainer, pl_module):
+        summary = self.summary()
+        print(f"[PhaseTimer] {summary}", flush=True)
+        if trainer.logger is not None:
+            try:
+                trainer.logger.log_metrics(summary)
+            except Exception as exc:  # logging must never fail a run
+                warnings.warn(f"PhaseTimerCallback could not log metrics: {exc}")
+
+
+__all__ = ["SaveModelCallback", "PhaseTimerCallback"]
