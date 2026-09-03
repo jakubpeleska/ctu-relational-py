@@ -2,6 +2,7 @@ from typing import Dict, Optional, Any, Union
 
 
 import json
+import zlib
 from pathlib import Path
 
 from mlflow.tracking import MlflowClient
@@ -167,4 +168,45 @@ def get_table_input(table: Table, task: EntityTask):
         time=time,
         target=target,
         transform=transform,
+    )
+
+
+def subsample_val_table(
+    val_table: Table,
+    max_rows: Optional[int],
+    dataset_name: str,
+    task_name: str,
+    increment: int,
+) -> tuple[Table, Optional[int]]:
+    """Cap a validation window to `max_rows` by a deterministic uniform sample.
+
+    Validation runs many times per training run over the whole window, which on
+    large datasets costs several times the training it evaluates. Subsampling the
+    *table* is the right lever: the val loader is unshuffled, so bounding it with
+    `limit_val_batches` would instead keep only the temporally earliest rows.
+
+    The seed is derived from ``(dataset_name, task_name, increment)`` and
+    deliberately **not** from the trial seed, so every learning mode and every
+    seed performs model selection against the identical evaluation set.
+
+    Returns the table (unchanged when no cap applies) and the seed used, or
+    ``None`` if no subsampling happened.
+    """
+    if max_rows is None or len(val_table.df) <= max_rows:
+        return val_table, None
+
+    seed = zlib.crc32(f"{dataset_name}/{task_name}/{increment}".encode())
+    sampled = (
+        val_table.df.sample(n=max_rows, random_state=seed)
+        .sort_values(val_table.time_col)
+        .reset_index(drop=True)
+    )
+    return (
+        Table(
+            df=sampled,
+            fkey_col_to_pkey_table=val_table.fkey_col_to_pkey_table,
+            pkey_col=val_table.pkey_col,
+            time_col=val_table.time_col,
+        ),
+        int(seed),
     )

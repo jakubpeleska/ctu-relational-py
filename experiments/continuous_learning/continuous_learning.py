@@ -28,13 +28,18 @@ from lightning.pytorch.utilities.model_summary import ModelSummary
 from torch_geometric.data import HeteroData
 from torch_geometric.loader import NeighborLoader
 
+from relbench.base import Table
 from relbench.datasets import get_dataset
 from relbench.tasks import get_task, get_task_names
 
 import redelex.tasks.mixins as task_mixin
 from redelex.data import make_pkey_fkey_graph
 from redelex.loaders import ComposedLoader
-from redelex.nn.train import LightningEntityTaskWrapper, SaveModelCallback
+from redelex.nn.train import (
+    LightningEntityTaskWrapper,
+    PhaseTimerCallback,
+    SaveModelCallback,
+)
 from redelex.nn.train.utils import get_metrics
 
 from experiments.continuous_learning.continuous_task import ContinuousWrapper
@@ -48,6 +53,7 @@ from experiments.continuous_learning.utils import (
     get_table_input,
     get_potato_client,
     get_experiment_runs_df,
+    subsample_val_table,
 )
 
 def get_resume_state_from_mlflow(
@@ -244,6 +250,26 @@ def run_continuous_learning_experiment(
 
     # create val dataloader for current split
     val_table = wrapped_task.get_table(start=train_timestamp, end=val_timestamp)
+
+    # Bound the cost of model selection. Validation runs `max_training_steps /
+    # val_check_interval` times per run over the whole window, which on the large
+    # datasets costs several times the training it is evaluating. Subsample the
+    # *table* rather than using `limit_val_batches`: the loader is unshuffled, so
+    # capping batches would keep only the temporally earliest rows.
+    #
+    # The seed depends on (dataset, task, increment) and deliberately NOT on the
+    # trial seed, so every method and every seed selects against the identical
+    # evaluation set. Reported metrics are unaffected either way -- they come from
+    # run_predictions.py re-scoring checkpoints over the full timeline.
+    val_max_rows: Optional[int] = config.get("val_max_rows", None)
+    config["val_rows_full"] = int(len(val_table.df))
+    val_table, subsample_seed = subsample_val_table(
+        val_table, val_max_rows, dataset_name, task_name, config["increment"]
+    )
+    if subsample_seed is not None:
+        config["val_subsample_seed"] = subsample_seed
+    config["val_rows_used"] = int(len(val_table.df))
+
     val_input = get_table_input(val_table, task)
     val_loader = NeighborLoader(
         data,
@@ -258,7 +284,9 @@ def run_continuous_learning_experiment(
     )
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    
+
+    val_check_interval: Optional[int] = config.get("val_check_interval", None)
+
     _, val_metric, higher_is_better = get_metrics(
         task.task_type, num_classes=getattr(task, "num_classes", None)
     )
@@ -275,8 +303,12 @@ def run_continuous_learning_experiment(
             "scheduler": scheduler,
             "monitor": f"val_{val_metric}",
             "mode": "max" if higher_is_better else "min",
-            "interval": "epoch",
-            "frequency": 1,
+            # Step on the same cadence as validation, so `patience` means the same
+            # number of optimiser steps in every run. Under the old epoch-based
+            # setting an "epoch" was min(limit_train_batches, len(loader)), so short
+            # early episodes decayed the LR ~15x more aggressively per step.
+            "interval": "step" if val_check_interval else "epoch",
+            "frequency": val_check_interval or 1,
         },
         modes=("val",)
     )
@@ -308,15 +340,22 @@ def run_continuous_learning_experiment(
         mode="max" if higher_is_better else "min",
         save_every_epoch=False,
     )
+    phase_timer = PhaseTimerCallback()
     trainer = L.Trainer(
         max_steps=max_training_steps,
         max_epochs=config.get("max_epochs", None),
         limit_train_batches=config.get("limit_train_batches", None),
         limit_val_batches=config.get("limit_val_batches", None),
+        # An integer `val_check_interval` counts global steps and may exceed the
+        # epoch length only when `check_val_every_n_epoch` is None (see Lightning
+        # fit_loop.py). That combination is what makes the number of validation
+        # passes identical across datasets and episode sizes.
+        val_check_interval=val_check_interval,
+        check_val_every_n_epoch=None if val_check_interval else 1,
         accelerator=device.type,
         devices=1,
         logger=logger,
-        callbacks=[save_model_callback],
+        callbacks=[save_model_callback, phase_timer],
         num_sanity_val_steps=0,
         enable_checkpointing=False,
         max_time=timedelta(hours=2),
@@ -361,6 +400,10 @@ def run_ray_tuner(
     gpu_ids: Optional[list[int]] = None,
     random_seed: int = 42,
     seeds: Optional[list[int]] = None,
+    max_increments: Optional[int] = None,
+    max_training_steps: int = 2000,
+    val_check_interval: Optional[int] = 100,
+    val_max_rows: Optional[int] = 25_000,
     cache_dir: str = ".cache",
     model_save_dir: str = "./models",
     resume: bool = False,
@@ -453,7 +496,12 @@ def run_ray_tuner(
         print("All increments are already completed according to MLflow. Exiting.")
         return
 
-    for i in range(start_inc, len(splits) - 1):
+    last_inc = len(splits) - 1
+    if max_increments is not None:
+        last_inc = min(last_inc, start_inc + max_increments)
+        print(f"Limiting to {max_increments} increment(s): {start_inc}..{last_inc - 1}")
+
+    for i in range(start_inc, last_inc):
         train_timestamp = splits[i]
         val_timestamp = splits[i+1]
         prev_train_timestamp = splits[i-1] if i > 1 else None
@@ -488,8 +536,10 @@ def run_ray_tuner(
                 "text_embedder_name": "glove",
                 "mlflow_experiment": mlflow_experiment,
                 "mlflow_uri": mlflow_uri,
-                "max_training_steps": 2000,
+                "max_training_steps": max_training_steps,
                 "limit_train_batches": 100,
+                "val_check_interval": val_check_interval,
+                "val_max_rows": val_max_rows,
                 "increment": i,
                 "train_timestamp": train_timestamp,
                 "val_timestamp": val_timestamp,
@@ -546,6 +596,23 @@ if __name__ == "__main__":
     parser.add_argument("--mlflow_experiment", type=str, default=None)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--num_samples", type=int, default=1)
+    parser.add_argument(
+        "--max_increments", type=int, default=None,
+        help="Stop after this many increments. For calibration and smoke runs.",
+    )
+    parser.add_argument("--max_training_steps", type=int, default=2000)
+    parser.add_argument(
+        "--val_check_interval", type=int, default=100,
+        help="Validate every N optimiser steps. 0 restores the old epoch-based "
+             "behaviour, where an epoch was min(limit_train_batches, len(loader)) "
+             "and short episodes validated far more often.",
+    )
+    parser.add_argument(
+        "--val_max_rows", type=int, default=25_000,
+        help="Cap the validation window by uniform subsample, seeded on "
+             "(dataset, task, increment) so it is identical across methods and "
+             "seeds. 0 disables the cap. Affects model selection only.",
+    )
     parser.add_argument("--num_gpus", type=int, default=0)
     parser.add_argument(
         "--gpu_ids", type=int, nargs="*", default=None,
@@ -575,6 +642,10 @@ if __name__ == "__main__":
         ray_experiment_name=args.run_name,
         mlflow_uri=args.mlflow_uri,
         seeds=args.seeds,
+        max_increments=args.max_increments,
+        max_training_steps=args.max_training_steps,
+        val_check_interval=args.val_check_interval or None,
+        val_max_rows=args.val_max_rows or None,
         gpu_ids=args.gpu_ids,
         mlflow_experiment=args.mlflow_experiment,
         random_seed=args.seed,
