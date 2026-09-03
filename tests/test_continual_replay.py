@@ -167,3 +167,52 @@ def test_herding_rejects_bad_shape():
 def test_herding_rejects_non_positive_k():
     with pytest.raises(ValueError, match="k"):
         herding_select(np.zeros((4, 2)), k=0)
+
+
+# --- logit storage (needed by DER++) ----------------------------------------
+
+
+def test_buffer_stores_logits_alongside_targets():
+    buf = ReservoirBuffer(capacity=10, seed=0)
+    buf.add([1, 2], timestamps=[10, 20], targets=[0.0, 1.0], logits=[-2.5, 3.5])
+    np.testing.assert_allclose(buf.logits, [-2.5, 3.5])
+
+
+def test_logits_stay_aligned_with_their_exemplar_after_eviction():
+    # Eviction overwrites a slot; every parallel array must move together, or a
+    # replayed exemplar would be distilled against another item's logit.
+    buf = ReservoirBuffer(capacity=5, seed=2)
+    n = 200
+    buf.add(list(range(n)), timestamps=list(range(n)),
+            targets=[float(i) for i in range(n)], logits=[float(-i) for i in range(n)])
+    np.testing.assert_allclose(buf.targets, buf.node_ids.astype(float))
+    np.testing.assert_allclose(buf.logits, -buf.node_ids.astype(float))
+
+
+def test_logits_default_to_zero_when_not_supplied():
+    buf = ReservoirBuffer(capacity=4, seed=0)
+    buf.add([7, 8])
+    np.testing.assert_allclose(buf.logits, [0.0, 0.0])
+
+
+def test_logits_round_trip_through_state_dict():
+    buf = ReservoirBuffer(capacity=6, seed=1)
+    buf.add(list(range(50)), logits=[float(i) for i in range(50)])
+    restored = ReservoirBuffer.from_state_dict(buf.state_dict())
+    np.testing.assert_allclose(restored.logits, buf.logits)
+
+
+def test_state_dict_without_logits_still_loads():
+    # buffers persisted before logits existed must not break a resumed chain
+    buf = ReservoirBuffer(capacity=4, seed=0)
+    buf.add([1, 2, 3])
+    state = buf.state_dict()
+    del state["logits"]
+    restored = ReservoirBuffer.from_state_dict(state)
+    assert restored.logits.shape == restored.targets.shape
+
+
+def test_mismatched_logit_length_is_rejected():
+    buf = ReservoirBuffer(capacity=4, seed=0)
+    with pytest.raises(ValueError, match="same length"):
+        buf.add([1, 2, 3], logits=[0.1, 0.2])

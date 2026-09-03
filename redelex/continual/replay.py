@@ -59,11 +59,15 @@ class ReservoirBuffer:
         self.node_ids = np.empty(0, dtype=np.int64)
         self.timestamps = np.empty(0, dtype=np.int64)
         self.targets = np.empty(0, dtype=np.float64)
+        # Model output recorded when the exemplar was stored. DER++ distils
+        # against these rather than against a teacher's fresh predictions, which
+        # is what lets it work without keeping a copy of the previous model.
+        self.logits = np.empty(0, dtype=np.float64)
 
     def __len__(self) -> int:
         return int(self.node_ids.shape[0])
 
-    def add(self, node_ids, timestamps=None, targets=None) -> None:
+    def add(self, node_ids, timestamps=None, targets=None, logits=None) -> None:
         """Offer a batch of items to the buffer, retaining a uniform sample."""
         ids = np.asarray(node_ids, dtype=np.int64).ravel()
         if ids.size == 0:
@@ -78,10 +82,15 @@ class ReservoirBuffer:
             if targets is None
             else np.asarray(targets, dtype=np.float64).ravel()
         )
-        if times.shape != ids.shape or vals.shape != ids.shape:
+        outs = (
+            np.zeros(ids.shape, dtype=np.float64)
+            if logits is None
+            else np.asarray(logits, dtype=np.float64).ravel()
+        )
+        if times.shape != ids.shape or vals.shape != ids.shape or outs.shape != ids.shape:
             raise ValueError(
-                f"node_ids {ids.shape}, timestamps {times.shape} and targets "
-                f"{vals.shape} must have the same length"
+                f"node_ids {ids.shape}, timestamps {times.shape}, targets "
+                f"{vals.shape} and logits {outs.shape} must have the same length"
             )
 
         for i in range(ids.shape[0]):
@@ -90,6 +99,7 @@ class ReservoirBuffer:
                 self.node_ids = np.append(self.node_ids, ids[i])
                 self.timestamps = np.append(self.timestamps, times[i])
                 self.targets = np.append(self.targets, vals[i])
+                self.logits = np.append(self.logits, outs[i])
                 continue
             # Replace a uniformly chosen slot with probability capacity / seen.
             j = int(self._rng.integers(0, self.seen))
@@ -97,6 +107,7 @@ class ReservoirBuffer:
                 self.node_ids[j] = ids[i]
                 self.timestamps[j] = times[i]
                 self.targets[j] = vals[i]
+                self.logits[j] = outs[i]
 
     def state_dict(self) -> dict:
         """Serialisable state, to persist the buffer between episodes."""
@@ -107,6 +118,7 @@ class ReservoirBuffer:
             "node_ids": self.node_ids.copy(),
             "timestamps": self.timestamps.copy(),
             "targets": self.targets.copy(),
+            "logits": self.logits.copy(),
             "rng_state": self._rng.bit_generator.state,
         }
 
@@ -118,6 +130,9 @@ class ReservoirBuffer:
         self.node_ids = np.asarray(state["node_ids"], dtype=np.int64).copy()
         self.timestamps = np.asarray(state["timestamps"], dtype=np.int64).copy()
         self.targets = np.asarray(state["targets"], dtype=np.float64).copy()
+        self.logits = np.asarray(
+            state.get("logits", np.zeros_like(self.targets)), dtype=np.float64
+        ).copy()
         if state.get("rng_state") is not None:
             self._rng.bit_generator.state = state["rng_state"]
 
