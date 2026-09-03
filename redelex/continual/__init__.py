@@ -1,3 +1,8 @@
+from redelex.continual.distillation import (
+    frozen_teacher,
+    logit_distillation_loss,
+    soft_target_kl,
+)
 from redelex.continual.regularization import ParameterAnchor, fisher_diagonal
 from redelex.continual.replay import ReservoirBuffer, herding_select
 from redelex.continual.metrics import (
@@ -11,6 +16,9 @@ from redelex.continual.metrics import (
 
 __all__ = [
     "ParameterAnchor",
+    "frozen_teacher",
+    "logit_distillation_loss",
+    "soft_target_kl",
     "fisher_diagonal",
     "ReservoirBuffer",
     "herding_select",
