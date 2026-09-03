@@ -57,3 +57,72 @@ Do not re-litigate anything here without new evidence.
   A registry-override helper was written and then DELIBERATELY REMOVED: disabling an integrity
   check is not worth the convenience. Task archives under `rel-stack/tasks/` hash correctly and
   download normally; only the dataset call needs `download=False`.
+
+## Evaluation protocol change (2026-09-03)
+
+- **Validation is now step-based, not epoch-based.** `val_check_interval=100` with
+  `check_val_every_n_epoch=None` gives exactly 20 validations per run everywhere.
+  **Why:** `limit_train_batches=100` resolves to `min(100, len(train_loader))`, so short early
+  episodes had short epochs and validated far more often. Measured from published MLflow runs:
+  rel-f1 driver-position validated **500** times at episode 1 and **33** at episode 11.
+  Validation drives SaveModelCallback AND ReduceLROnPlateau(patience=3, interval="epoch"), so the
+  LR collapsed on small episodes and barely decayed on large ones - a confound scaling with episode
+  size, i.e. along the exact temporal axis the paper studies.
+
+- **LR scheduler moved to `interval="step", frequency=100`** so patience=3 means 300 optimiser
+  steps in every run.
+
+- **Validation window capped at 25,000 rows** by uniform subsample, seeded on
+  `(dataset, task, increment)` and NEVER on the trial seed, so every method and seed selects
+  against an identical evaluation set. Helper: `subsample_val_table` in
+  `experiments/continuous_learning/utils.py`.
+  **Why not `limit_val_batches`:** the val loader is `shuffle=False`, so capping batches would keep
+  only the temporally earliest rows - a biased subsample.
+  **Why this is safe:** reported metrics never come from this set. They come from
+  `run_predictions.py` re-scoring every checkpoint over the full timeline; the notebook computes the
+  paper's tables from `full_table` predictions. The subsample drives model selection and LR only.
+  **Cost:** validation was 15.1x training on rel-stack (30,100 vs 2,000 batches), 13.2x on
+  rel-amazon, 8.2x on rel-hm. Capping cuts validation work ~7.7x on rel-stack.
+
+- **All three are CLI flags** (`--val_check_interval`, `--val_max_rows`, `--max_training_steps`);
+  passing 0 restores the old behaviour so it stays reachable as a control.
+
+- **Comparability:** switched wholesale. The port gate passed under the OLD protocol, so it must be
+  re-earned on rel-f1 under the new one. Expect a real shift - the fix deliberately removes the LR
+  collapse on small episodes.
+
+## Hyperparameters (2026-09-03)
+
+- **They were never chosen.** Every model constant was written in commit `a15a5f8` (2026-04-22) and
+  never revisited; no rationale documented anywhere. Copied from
+  `experiments/universal_encoder/universal_encoder_supervised.py` (identical values AND key naming).
+  Against the repo's own sweep (`experiments/original/dbgnn_hyperparams.py:296-315`):
+  `gnn_channels=128` is **outside** its range (that sweep fixed 64, commented space topped at 64);
+  `batch_size=128` vs its 512; **`lr` was never searched anywhere** - always a literal, with
+  `tune.choice([0.001,0.005])` commented out. Only `num_neighbors` and `gnn_layers` have any tuning
+  precedent, and that was for the non-continual setting.
+- **`head_norm` was dead config** - in param_space and logged to MLflow, never passed to the model.
+  Now passed. Same value, so no results change.
+- **`out_channels` was never passed** either; always 1. Correct for every task in the grid (all
+  binary/regression) but would have silently broken multiclass. Now derived from task type.
+- **Learning rate is now logged** (`LearningRateMonitor`). It was logged in NO published run, which
+  is why the LR collapse went unnoticed.
+- Row encoder still runs at relbench defaults (`{"channels":128,"num_layers":4}`) - a 4-layer ResNet
+  feeding a 2-layer GNN, never chosen. Relevant to CMu9's encoder-vs-GNN attribution.
+
+## Method roster (2026-09-03) - 7 modes
+
+`from_scratch`, `ft_full`, `ft_newonly`, `er_reservoir`, `der_pp`, `ewc`, `lwf`.
+
+- **Dropped `ft_upsample`**: a defective Experience Replay with an uncontrolled mixing ratio,
+  subsumed by ER with an explicit ratio.
+- **Dropped `replay_herding`**: iCaRL herding approximates *class* means; every task here is binary
+  or regression in a domain-incremental setting, so the motivation does not transfer. Code retained.
+- **Added DER++**: literature recommends DER/DER++ as the starting baseline specifically for
+  Domain-IL, which is what this setting is.
+- **Rejected A-GEM/GEM**: gradient-projection methods are reported as less effective than replay in
+  Domain-IL, and ER already outperforms A-GEM.
+- **Parameter isolation excluded on principle**: it needs task identity at test time and allocates
+  disjoint capacity per task, but this is domain-incremental (one task, drifting distribution).
+  PackNet also leaves 0.02% of the network free by episode 12, the median chain length here.
+  Write it up as a finding, not a gap.
