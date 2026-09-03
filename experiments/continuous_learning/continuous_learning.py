@@ -28,7 +28,7 @@ from lightning.pytorch.utilities.model_summary import ModelSummary
 from torch_geometric.data import HeteroData
 from torch_geometric.loader import NeighborLoader
 
-from relbench.base import Table
+from relbench.base import Table, TaskType
 from relbench.datasets import get_dataset
 from relbench.tasks import get_task, get_task_names
 
@@ -194,6 +194,19 @@ def run_continuous_learning_experiment(
         cache_dir=f"{cache_path}/materialized",
     )
 
+    # The head width is fixed by the task, not a free choice. Every task in the
+    # current grid is binary or regression, so this is 1 throughout -- but the
+    # model defaulted to 1 unconditionally, which would have silently produced a
+    # single logit for a multiclass task.
+    if task.task_type == TaskType.MULTICLASS_CLASSIFICATION:
+        out_channels = task.num_classes
+    elif task.task_type == TaskType.MULTILABEL_CLASSIFICATION:
+        out_channels = len(task.stats()["num_labels"]) if hasattr(task, "stats") else None
+        assert out_channels, "multilabel tasks need an explicit label count"
+    else:
+        out_channels = 1
+    config["out_channels"] = out_channels
+
     # create model
     model = HeterogeneousSAGE(
         data=data,
@@ -201,6 +214,11 @@ def run_continuous_learning_experiment(
         gnn_channels=gnn_channels,
         gnn_layers=gnn_layers,
         gnn_aggr=gnn_aggr,
+        out_channels=out_channels,
+        # `head_norm` was in param_space and logged to MLflow, but was never
+        # passed here -- the model always used its own default. Same value, but
+        # the logged "hyperparameter" was inert.
+        norm=config["head_norm"],
     )
 
     # optionally load weights from previous split
@@ -355,7 +373,13 @@ def run_continuous_learning_experiment(
         accelerator=device.type,
         devices=1,
         logger=logger,
-        callbacks=[save_model_callback, phase_timer],
+        callbacks=[
+            save_model_callback,
+            phase_timer,
+            # The LR was logged nowhere, which is why its episode-dependent
+            # collapse under the old epoch-based schedule went unnoticed.
+            callbacks.LearningRateMonitor(logging_interval="step"),
+        ],
         num_sanity_val_steps=0,
         enable_checkpointing=False,
         max_time=timedelta(hours=2),
