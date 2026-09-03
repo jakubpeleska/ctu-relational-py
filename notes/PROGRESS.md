@@ -17,7 +17,7 @@ Priority: (1) integrate real CL techniques, (2) add datasets or rigorously argue
 | 0d. Robustness fixes | DONE - seeds/mlflow_uri/trial-tolerance |
 | 0f. rel-stack download + probe | DONE - 53 episodes, use download=False |
 | 0f. rel-amazon download + probe | DONE - 61 episodes, span 2008-2018 |
-| 0b. Port verification vs MLflow (GATE) | PASSING - ep1 gap 0.78%, ep 8-11 still running |
+| 0b. Port verification vs MLflow (GATE) | **PASSED** - all 11 episodes, max gap 1.65% |
 | 0c. Local multi-GPU runner | DONE - scripts/run_grid.py |
 | Phase 1: CL metrics (ACC/BWT/FWT/forgetting + decay) | DONE - redelex/continual/metrics.py |
 | Phase 1: Replay family (reservoir + herding) | DONE - redelex/continual/replay.py |
@@ -64,9 +64,17 @@ rel-stack and rel-f1/rel-trial counts independently confirmed against the publis
 | 3 | 4.2773 +/- 0.0209 | 4.2593 +/- 0.0071 | 0.42% |
 | 4 | 4.5775 +/- 0.0571 | 4.5989 +/- 0.0368 | 0.47% |
 | 5 | 5.2796 +/- 0.0398 | 5.2001 +/- 0.0692 | 1.50% |
+| 6 | 4.7581 +/- 0.0691 | 4.7273 +/- 0.0307 | 0.65% |
+| 7 | 4.7839 +/- 0.0472 | 4.7293 +/- 0.0338 | 1.14% |
+| 8 | 5.4637 +/- 0.0232 | 5.4196 +/- 0.0419 | 0.81% |
+| 9 | 3.4286 +/- 0.0459 | 3.4572 +/- 0.0559 | 0.83% |
+| 10 | 3.2665 +/- 0.0438 | 3.2127 +/- 0.0414 | 1.65% |
+| 11 | 3.1107 +/- 0.0550 | 3.0975 +/- 0.0191 | 0.42% |
 
-Episode 1 is the gate (same window, same seeds, from scratch). PASS.
-Published episode 11 is 3.1107, essentially the paper's Table 2 Scratch MAE of 3.106.
+**PASSED across the whole chain.** Every episode within 1.65%, most under 1%, all well inside
+seed spread. Episode 1 is the strict gate (same window, same seeds, trained from scratch): 0.78%.
+Published episode 11 is 3.1107 vs the paper's Table 2 Scratch MAE of 3.106 -- the chain reproduces.
+Re-run cost: 55 runs, ~3.2 min each on one A100.
 
 ## Next action
 
