@@ -131,7 +131,12 @@ class ParameterAnchor:
                 continue
             contribution = fisher[name].detach().clone()
             if name in self.fisher:
-                self.fisher[name] = self.gamma * self.fisher[name] + contribution
+                # An anchor restored from disk holds CPU tensors while a freshly
+                # computed Fisher follows the model, so the two sides of this sum
+                # routinely disagree about device. Align on the contribution rather
+                # than assuming either side.
+                previous = self.fisher[name].to(contribution.device)
+                self.fisher[name] = self.gamma * previous + contribution
             else:
                 self.fisher[name] = contribution
             # Anchor to where the model ended this episode.

@@ -203,3 +203,39 @@ def test_anchor_skips_parameters_whose_shape_changed(model):
 def test_anchor_rejects_bad_hyperparameters(lam, gamma):
     with pytest.raises(ValueError):
         ParameterAnchor(lam=lam, gamma=gamma)
+
+
+# --- regression: device agreement across an episode boundary -----------------
+
+
+def test_consolidate_accepts_a_fisher_on_another_device(model):
+    # An anchor restored from disk holds CPU tensors (state_dict moves them there),
+    # while the Fisher computed after trainer.fit follows the model onto the GPU.
+    # Folding one into the other used to raise "expected all tensors to be on the
+    # same device", and only at the SECOND episode of an EWC chain.
+    anchor = ParameterAnchor(lam=1.0, gamma=0.9)
+    ones = {n: torch.ones_like(p) for n, p in model.named_parameters()}
+    anchor.consolidate(model, ones)
+
+    restored = ParameterAnchor.from_state_dict(anchor.state_dict())
+    restored.consolidate(model, ones)  # must not raise
+
+    assert restored.episodes == 2
+    torch.testing.assert_close(
+        restored.fisher["weight"], 1.9 * torch.ones_like(model.weight)
+    )
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a GPU")
+def test_consolidate_folds_a_cuda_fisher_into_a_cpu_anchor(model):
+    # The exact failure seen on rel-f1: episode 1 saved a CPU anchor, episode 2
+    # computed its Fisher on cuda:0, and the fold raised.
+    anchor = ParameterAnchor(lam=1.0, gamma=0.9)
+    anchor.consolidate(model, {n: torch.ones_like(p) for n, p in model.named_parameters()})
+    cpu_anchor = ParameterAnchor.from_state_dict(anchor.state_dict())
+
+    gpu_model = model.cuda()
+    gpu_fisher = {n: torch.ones_like(p) for n, p in gpu_model.named_parameters()}
+    cpu_anchor.consolidate(gpu_model, gpu_fisher)  # must not raise
+
+    assert cpu_anchor.penalty(gpu_model).item() == pytest.approx(0.0, abs=1e-6)
