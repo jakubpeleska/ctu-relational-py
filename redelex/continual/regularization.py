@@ -76,8 +76,20 @@ def fisher_diagonal(
             loss = loss_fn(pred.float(), target)
             loss.backward()
             for name, param in _trainable(model):
-                if param.grad is not None:
-                    fisher[name] += param.grad.detach() ** 2
+                if param.grad is None:
+                    continue
+                grad = param.grad.detach()
+                if not torch.isfinite(grad).all():
+                    # A single non-finite gradient would poison this parameter's
+                    # importance for the rest of the chain, and the penalty it
+                    # feeds is never inspected. Skip the contribution loudly
+                    # rather than anchoring to NaN.
+                    raise RuntimeError(
+                        f"non-finite gradient for {name!r} while estimating the "
+                        f"Fisher; the anchor would be poisoned for every "
+                        f"subsequent episode"
+                    )
+                fisher[name] += grad**2
             counted += 1
     finally:
         model.zero_grad(set_to_none=True)

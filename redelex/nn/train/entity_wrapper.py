@@ -171,12 +171,36 @@ class LightningEntityTaskWrapper(L.LightningModule):
 
         self.log_dict(val_metrics, prog_bar=True, logger=True)
 
+        self._step_plateau_scheduler(tune_metric)
+
+    def _step_plateau_scheduler(self, tune_metric) -> None:
+        """Advance a ReduceLROnPlateau once per validation.
+
+        Lightning cannot do this for us here. Its ``"interval": "step"`` counts
+        ``batch_idx`` *within* an epoch, so with ``limit_train_batches`` capping
+        the epoch below the scheduler frequency the scheduler never fires at all
+        -- measured: a 40-batch epoch stayed at the initial LR for a whole
+        2000-step run while a 100-batch epoch decayed to 6.25e-05. Epoch length
+        varies by learning mode here (increment-only, full history, or increment
+        plus replay), so leaving it to Lightning made the LR schedule differ
+        between the very methods being compared.
+
+        Stepping from the hook that produced the metric makes ``patience`` mean
+        "validations" for every mode and every dataset.
+        """
+        if self.scheduler is None:
+            return
+        value = (
+            tune_metric.item() if hasattr(tune_metric, "item") else float(tune_metric)
+        )
+        self.scheduler.step(value)
+        self.log(
+            "lr", self.optimizer.param_groups[0]["lr"], prog_bar=False, logger=True
+        )
+
     def configure_optimizers(self):
-        if self.lr_scheduler_config is not None:
-            return {
-                "optimizer": self.optimizer,
-                **self.lr_scheduler_config,
-            }
+        # The scheduler is deliberately NOT handed to Lightning: it is stepped in
+        # `_step_plateau_scheduler` instead, once per validation. See there.
         return self.optimizer
 
 

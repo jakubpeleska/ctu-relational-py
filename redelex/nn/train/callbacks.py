@@ -45,9 +45,16 @@ class SaveModelCallback(L.Callback):
         mode = "max" if pl_module.higher_is_better else "min"
         return monitor, mode
 
-    def on_validation_epoch_end(
+    def on_validation_end(
         self, trainer: L.Trainer, pl_module: LightningEntityTaskWrapper
     ):
+        # `on_validation_end`, not `on_validation_epoch_end`. Lightning calls the
+        # callback hook BEFORE the LightningModule's, so at epoch-end the score in
+        # `trainer.callback_metrics` is still validation k-1's while the weights in
+        # hand are validation k's: the saved checkpoint was one validation stale,
+        # and the final validation's score was never seen at all. Measured on the
+        # production grid, the checkpoint saved was the pass immediately after the
+        # best one in 121 of 132 runs.
         if trainer.sanity_checking:
             return
 

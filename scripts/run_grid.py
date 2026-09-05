@@ -65,7 +65,12 @@ def parse_args(argv=None):
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--cpus-per-job", type=int, default=4)
     p.add_argument("--mlflow-uri", default="http://potato.felk.cvut.cz:2222")
-    p.add_argument("--mlflow-experiment-prefix", default="pelesjak_cl")
+    p.add_argument(
+        "--mlflow-experiment-prefix", default="pelesjak_cl_v2",
+        help="Must NOT collide with the published grid: 'pelesjak_cl' resolves to "
+             "pelesjak_cl_from_scratch, which is MLflow experiment 92 holding 684 "
+             "runs whose checkpoints live on a cluster this host cannot reach.",
+    )
     p.add_argument("--out", default="logs/grid", help="Root for logs, models and markers.")
     p.add_argument("--resume-chain", action="store_true",
                    help="Pass --resume so each chain resumes from MLflow.")

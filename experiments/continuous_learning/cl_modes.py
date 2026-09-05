@@ -183,24 +183,42 @@ def buffer_to_table(
         template: Any table from the same task, used for the foreign-key metadata.
 
     Returns:
-        A ``Table`` of the buffered rows, time-ordered.
+        ``(table, order)`` -- the time-ordered table, and the permutation that
+        produced it so per-exemplar values such as stored logits can be reordered
+        to match without recomputing a tie-sensitive sort.
     """
     if len(buffer) == 0:
         raise ValueError("cannot build a table from an empty buffer")
 
-    df = pd.DataFrame(
+    # The stored logit must ride through the sort with its own row. Re-joining it
+    # afterwards on the entity id loses it: the buffer holds one exemplar per
+    # (entity, timestamp) and the same entity recurs at many timestamps, so an
+    # id-keyed lookup collapses to one logit per entity and hands most exemplars
+    # somebody else's teacher signal.
+    #
+    # The permutation is returned rather than recomputed at the call site because
+    # `sort_values` uses a non-stable quicksort by default and these tables have
+    # heavy timestamp ties (rel-f1/driver-position: 254 distinct timestamps for
+    # 7,453 rows), so an independently computed sort would disagree on ties and
+    # silently reintroduce a shuffled version of the same bug.
+    frame = pd.DataFrame(
         {
             entity_col: buffer.node_ids.astype("int64"),
             time_col: pd.to_datetime(buffer.timestamps, unit="s"),
             target_col: buffer.targets,
         }
-    ).sort_values(time_col).reset_index(drop=True)
+    )
+    order = frame[time_col].to_numpy().argsort(kind="stable")
+    df = frame.iloc[order].reset_index(drop=True)
 
-    return Table(
-        df=df,
-        fkey_col_to_pkey_table=template.fkey_col_to_pkey_table,
-        pkey_col=None,
-        time_col=time_col,
+    return (
+        Table(
+            df=df,
+            fkey_col_to_pkey_table=template.fkey_col_to_pkey_table,
+            pkey_col=None,
+            time_col=time_col,
+        ),
+        order,
     )
 
 

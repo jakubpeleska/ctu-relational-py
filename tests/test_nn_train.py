@@ -131,17 +131,17 @@ def test_save_model_callback_derives_monitor(tmp_path):
     callback = SaveModelCallback(save_dir=str(tmp_path))
     module = _module()
 
-    callback.on_validation_epoch_end(_trainer({"val_roc_auc": torch.tensor(0.6)}), module)
+    callback.on_validation_end(_trainer({"val_roc_auc": torch.tensor(0.6)}), module)
     best = tmp_path / "best_model.pt"
     assert best.exists()
 
     # A worse score must not overwrite the checkpoint.
     best.unlink()
-    callback.on_validation_epoch_end(_trainer({"val_roc_auc": torch.tensor(0.4)}), module)
+    callback.on_validation_end(_trainer({"val_roc_auc": torch.tensor(0.4)}), module)
     assert not best.exists()
 
     # A better score does.
-    callback.on_validation_epoch_end(_trainer({"val_roc_auc": torch.tensor(0.7)}), module)
+    callback.on_validation_end(_trainer({"val_roc_auc": torch.tensor(0.7)}), module)
     assert best.exists()
 
 
@@ -149,7 +149,7 @@ def test_save_model_callback_ignores_sanity_check(tmp_path):
     callback = SaveModelCallback(save_dir=str(tmp_path))
     module = _module()
 
-    callback.on_validation_epoch_end(
+    callback.on_validation_end(
         _trainer({"val_roc_auc": torch.tensor(0.99)}, sanity_checking=True), module
     )
     assert not (tmp_path / "best_model.pt").exists()
@@ -161,7 +161,7 @@ def test_save_model_callback_warns_on_missing_monitor(tmp_path):
     module = _module()
 
     with pytest.warns(UserWarning, match="val_nonexistent"):
-        callback.on_validation_epoch_end(_trainer({}), module)
+        callback.on_validation_end(_trainer({}), module)
     assert not (tmp_path / "best_model.pt").exists()
 
 
@@ -169,12 +169,12 @@ def test_save_model_callback_explicit_monitor_min_mode(tmp_path):
     callback = SaveModelCallback(save_dir=str(tmp_path), monitor="val_mae", mode="min")
     module = _module(higher_is_better=False)
 
-    callback.on_validation_epoch_end(_trainer({"val_mae": torch.tensor(1.0)}), module)
+    callback.on_validation_end(_trainer({"val_mae": torch.tensor(1.0)}), module)
     best = tmp_path / "best_model.pt"
     assert best.exists()
 
     best.unlink()
-    callback.on_validation_epoch_end(_trainer({"val_mae": torch.tensor(2.0)}), module)
+    callback.on_validation_end(_trainer({"val_mae": torch.tensor(2.0)}), module)
     assert not best.exists()
 
 
@@ -207,7 +207,79 @@ def test_save_model_callback_save_every_epoch(tmp_path):
     callback = SaveModelCallback(save_dir=str(tmp_path), save_every_epoch=True)
     module = _module()
 
-    callback.on_validation_epoch_end(
+    callback.on_validation_end(
         _trainer({"val_roc_auc": torch.tensor(0.5)}, epoch=3), module
     )
     assert (tmp_path / "epoch_3_val_roc_auc_0.500.pt").exists()
+
+
+# --- regression: the saved checkpoint must be the best-scoring one -----------
+
+
+def test_save_model_callback_saves_the_weights_that_earned_the_score(tmp_path):
+    """Drive the callback through a REAL Trainer, not a fake.
+
+    The older tests build a SimpleNamespace trainer and call the hook by hand,
+    which cannot catch a hook-ordering bug: they supply the metric and the
+    weights in the same breath, whereas Lightning populates them one hook apart.
+
+    The weights here are stamped with the global step during TRAINING, so they
+    advance independently of the validation hook. That is what exposes the bug:
+    a callback firing before the module logs sees validation k-1's score
+    alongside validation k's weights.
+    """
+    import lightning as L
+    import torch
+    from torch.utils.data import DataLoader, TensorDataset
+
+    from redelex.nn.train.callbacks import SaveModelCallback
+
+    INTERVAL = 2
+    scores = [0.5, 0.9, 0.2, 0.1]  # best is validation index 1
+
+    class Tiny(L.LightningModule):
+        def __init__(self):
+            super().__init__()
+            self.model = torch.nn.Linear(2, 1)
+            self.tune_metric = "score"
+            self.higher_is_better = True
+            self.k = 0
+
+        def training_step(self, batch, _):
+            return self.model(batch[0]).mean()
+
+        def on_train_batch_end(self, *args, **kwargs):
+            # weights track TRAINING progress, not the validation hook
+            with torch.no_grad():
+                self.model.weight.fill_(float(self.trainer.global_step))
+
+        def validation_step(self, batch, _):
+            return None
+
+        def on_validation_epoch_end(self):
+            self.log("val_score", scores[min(self.k, len(scores) - 1)])
+            self.k += 1
+
+        def configure_optimizers(self):
+            return torch.optim.SGD(self.parameters(), lr=0.0)
+
+    module = Tiny()
+    cb = SaveModelCallback(save_dir=str(tmp_path), monitor="val_score", mode="max")
+    loader = DataLoader(TensorDataset(torch.randn(64, 2)), batch_size=8)
+    L.Trainer(
+        max_steps=len(scores) * INTERVAL, limit_train_batches=INTERVAL,
+        val_check_interval=INTERVAL, check_val_every_n_epoch=None, logger=False,
+        enable_checkpointing=False, enable_progress_bar=False,
+        enable_model_summary=False, num_sanity_val_steps=0, accelerator="cpu",
+        callbacks=[cb],
+    ).fit(module, train_dataloaders=loader,
+          val_dataloaders=DataLoader(TensorDataset(torch.randn(8, 2)), batch_size=8))
+
+    saved_step = int(torch.load(tmp_path / "best_model.pt", map_location="cpu")["weight"]
+                     .flatten()[0].item())
+    best_validation = scores.index(max(scores))          # 1
+    expected_step = (best_validation + 1) * INTERVAL     # weights when that score was earned
+    assert saved_step == expected_step, (
+        f"saved weights from step {saved_step}; validation {best_validation} had the "
+        f"best score and its weights were step {expected_step}"
+    )

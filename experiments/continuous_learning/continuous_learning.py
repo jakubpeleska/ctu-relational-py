@@ -92,53 +92,103 @@ def get_resume_state_from_mlflow(
     val_metric: str,
     higher_is_better: bool,
     mlflow_uri: Optional[str] = None,
-) -> tuple[int, Optional[str]]:
-    """Queries MLFlow to find the last completed increment and the best weights path."""
+    expected_trials: int = 5,
+    chain_id: Optional[str] = None,
+) -> tuple[int, Optional[str], Optional[str]]:
+    """Last fully completed increment, and the weights and CL state to continue from.
+
+    Returns ``(next_increment, weights_path, cl_state_path)``. The CL state is
+    returned alongside the weights and from the SAME trial: a chain that resumes
+    with weights but without its buffer or anchor silently runs one episode with
+    the method disabled, and permanently loses the pre-resume history that made
+    the reservoir uniform over the stream.
+
+    Args:
+        expected_trials: How many trials an increment must have to count as
+            complete. Must be the number of seeds actually run -- a hardcoded
+            value larger than that makes every increment look incomplete and
+            resume silently restarts from episode 1.
+        chain_id: When given, only runs from this chain are considered. Without
+            it, unrelated runs in the same MLflow experiment -- including the
+            published grid, whose checkpoints live on a machine this one cannot
+            reach -- can satisfy the quorum.
+    """
     try:
         mlflow_client = get_potato_client(mlflow_uri)
+        filters = [
+            f"params.dataset_name = '{dataset_name}'",
+            f"params.task_name = '{task_name}'",
+            "attributes.status = 'FINISHED'",
+        ]
+        if chain_id:
+            filters.append(f"params.chain_id = '{chain_id}'")
         runs = get_experiment_runs_df(
-            mlflow_client,
-            mlflow_experiment,
-            filter_string=f"params.dataset_name = '{dataset_name}' and params.task_name = '{task_name}' and attributes.status = 'FINISHED'",
+            mlflow_client, mlflow_experiment, filter_string=" and ".join(filters)
         )
-        
+        if runs.empty:
+            print("No finished runs found; starting from the first increment.")
+            return 1, None, None
+
         best_metric_col = f"best_val_{val_metric}"
-        
         runs["increment"] = runs["increment"].astype(int)
         runs[best_metric_col] = pd.to_numeric(runs[best_metric_col], errors="coerce")
-        
-        print()
-        
-        max_inc = runs["increment"].max()
-        while max_inc >= 0:
-            inc_runs = runs[runs["increment"] == max_inc]
-            if len(inc_runs) >= 5:
+
+        # Walk back to the newest increment that is genuinely complete. A partially
+        # finished increment must not be resumed past -- its best trial is a
+        # sample of the seeds, not the best of them.
+        max_inc, inc_runs = runs["increment"].max(), None
+        while max_inc >= 1:
+            candidate = runs[runs["increment"] == max_inc]
+            if len(candidate) >= expected_trials:
+                inc_runs = candidate
                 break
+            if len(candidate) > 0:
+                print(
+                    f"Increment {max_inc} has {len(candidate)}/{expected_trials} "
+                    f"trials; treating it as incomplete and looking further back."
+                )
             max_inc -= 1
 
-        print(f"Found {len(inc_runs)} runs for increment {max_inc}.")
-        
-        if higher_is_better:
-            best_run = inc_runs.loc[inc_runs[best_metric_col].idxmax()]
-        else:
-            best_run = inc_runs.loc[inc_runs[best_metric_col].idxmin()]
+        if inc_runs is None or inc_runs.empty:
+            print("No complete increment found; starting from the first increment.")
+            return 1, None, None
 
-        # Resolve weights path
-        if "model_save_dir" in best_run and pd.notna(
-            best_run["model_save_dir"]
-        ):
-            weights_path = Path(best_run["model_save_dir"]) / "best_model.pt"
-        else:
-            raise ValueError(
-                f"Best run for increment {max_inc} does not have 'weights_path'."
+        idx = (
+            inc_runs[best_metric_col].idxmax()
+            if higher_is_better
+            else inc_runs[best_metric_col].idxmin()
+        )
+        best_run = inc_runs.loc[idx]
+
+        if "model_save_dir" not in best_run or pd.isna(best_run["model_save_dir"]):
+            raise ValueError(f"best run for increment {max_inc} has no model_save_dir")
+
+        save_dir = Path(best_run["model_save_dir"])
+        weights_path = save_dir / "best_model.pt"
+        if not weights_path.exists():
+            # The published grid records paths on a cluster this box cannot see.
+            raise FileNotFoundError(
+                f"checkpoint for increment {max_inc} is not on this filesystem: "
+                f"{weights_path}"
             )
 
-        return max_inc + 1, weights_path
+        state_path = save_dir / CLState.FILENAME
+        print(
+            f"Resuming after increment {max_inc} "
+            f"({len(inc_runs)} trials), CL state "
+            f"{'found' if state_path.exists() else 'ABSENT'}."
+        )
+        return (
+            max_inc + 1,
+            str(weights_path),
+            str(state_path) if state_path.exists() else None,
+        )
 
-    except Exception as e:
-        print(f"Failed to query MLflow for resume state: {e}")
+    except (ValueError, KeyError, FileNotFoundError, OSError) as e:
+        print(f"Could not determine resume state ({type(e).__name__}: {e}); "
+              f"starting from the first increment.")
 
-    return 1, None
+    return 1, None, None
 
 
 def _update_chain_state(
@@ -171,6 +221,22 @@ def _update_chain_state(
     # back on the training device first; the helpers then read the device off the
     # model itself, so batches and parameters cannot disagree.
     model.to(device)
+
+    # Measure the chain state at the weights the chain actually continues from.
+    # After `fit` the model holds the FINAL optimiser step, but the next episode
+    # warm-starts from `best_model.pt`, so an anchor or a stored logit taken here
+    # describes a point the chain never occupies. On the smoke artefacts the two
+    # differ by ||theta_final - theta_best|| = 22.7.
+    best_checkpoint = Path(config["model_save_dir"]) / "best_model.pt"
+    if best_checkpoint.exists():
+        model.load_state_dict(torch.load(best_checkpoint, map_location=device))
+        model.to(device)
+    else:
+        print(
+            f"WARNING: {best_checkpoint} missing; chain state will be measured at "
+            f"the final weights rather than the selected ones.",
+            flush=True,
+        )
 
     if chain_spec.uses_buffer:
         buffer = cl_state.buffer
@@ -510,7 +576,7 @@ def run_continuous_learning_experiment(
         # far, capped at `buffer_size`. Unlike ft_upsample the ratio is explicit and
         # honoured, because `weighted` draws by configured proportion rather than by
         # loader size.
-        replay_table = buffer_to_table(
+        replay_table, replay_order = buffer_to_table(
             cl_state.buffer,
             entity_col=task.entity_col,
             time_col=wrapped_task.full_table.time_col,
@@ -521,20 +587,11 @@ def run_continuous_learning_experiment(
 
         replay_transform = replay_input.transform
         if spec.distil_stored_logits:
-            # DER++ distils against the logits recorded at insertion time, so each
-            # replayed example must carry its own stored logit. Indexed by
-            # `input_id`, exactly as the target is.
+            # DER++ distils against the logit recorded when each exemplar was
+            # stored, so the logit must follow its own row through the sort.
+            # `replay_order` is the exact permutation the table was built with.
             ordered_logits = torch.as_tensor(
-                replay_table.df[task.entity_col]
-                .map(
-                    dict(
-                        zip(
-                            cl_state.buffer.node_ids.tolist(),
-                            cl_state.buffer.logits.tolist(),
-                        )
-                    )
-                )
-                .to_numpy(dtype="float32")
+                cl_state.buffer.logits[replay_order], dtype=torch.float32
             )
             replay_transform = T.Compose(
                 [
@@ -730,6 +787,18 @@ def run_continuous_learning_experiment(
             train_timestamp=train_timestamp,
             device=device,
         )
+        # A NaN parameter is silent: the forward nan_to_num's it away, the metric
+        # still looks healthy, and the dead column is simply gone. Refuse to write
+        # chain state built on one, so a poisoned Fisher or buffer cannot travel.
+        nonfinite = [
+            n for n, p in model.named_parameters() if not torch.isfinite(p).all()
+        ]
+        if nonfinite:
+            raise RuntimeError(
+                f"non-finite parameters after training: {nonfinite[:5]} "
+                f"({len(nonfinite)} total) -- refusing to save chain state"
+            )
+
         cl_state.save(Path(model_save_dir) / CLState.FILENAME)
 
         if with_ray:
@@ -857,6 +926,11 @@ def run_ray_tuner(
     del task
     best_weights_path = None
     best_cl_state_path = None
+
+    # Identifies this chain, so `--resume` cannot mistake another chain's runs --
+    # notably the published grid, which shares dataset/task names but whose
+    # checkpoints live on a machine this one cannot reach -- for its own.
+    chain_id = f"{dataset_name}/{task_name}/{learning_mode}/{model_save_dir}"
     
     model_save_dir = Path(model_save_dir).absolute()
     
@@ -865,14 +939,32 @@ def run_ray_tuner(
     start_inc = 1
     
     if resume:
-        resume_inc, resume_weights_path = get_resume_state_from_mlflow(
-            mlflow_experiment, dataset_name, task_name, val_metric, higher_is_better,
-            mlflow_uri=mlflow_uri,
+        resume_inc, resume_weights_path, resume_state_path = (
+            get_resume_state_from_mlflow(
+                mlflow_experiment, dataset_name, task_name, val_metric,
+                higher_is_better, mlflow_uri=mlflow_uri,
+                expected_trials=len(seeds), chain_id=chain_id,
+            )
         )
         if resume_inc > 1 and resume_weights_path is not None:
+            chain_spec = resolve_mode(learning_mode)
+            if chain_spec.needs_chain_state and resume_state_path is None:
+                # Continuing a replay or EWC chain without its buffer or anchor
+                # would run one episode with the method silently disabled and lose
+                # the pre-resume history for good. Fail rather than warn: worker
+                # stdout is swallowed by log_to_driver=False.
+                raise RuntimeError(
+                    f"cannot resume a {learning_mode!r} chain at increment "
+                    f"{resume_inc}: its weights were found but {CLState.FILENAME} "
+                    f"was not. Restart the chain instead of resuming it."
+                )
             start_inc = resume_inc
             best_weights_path = resume_weights_path
-            print(f"Resuming from increment {resume_inc} with weights from {resume_weights_path}")
+            best_cl_state_path = resume_state_path
+            print(
+                f"Resuming from increment {resume_inc} with weights "
+                f"{resume_weights_path} and CL state {resume_state_path}"
+            )
         else:
             print("No valid resume state found. Starting from scratch.")
             
@@ -920,6 +1012,7 @@ def run_ray_tuner(
                 # what the chain is, versus what this episode runs -- episode 1 is
                 # always from_scratch, but its buffer/anchor must still be built
                 "chain_learning_mode": learning_mode,
+                "chain_id": chain_id,
                 "seed": tune.grid_search(seeds),
                 "text_embedder_name": "glove",
                 "mlflow_experiment": mlflow_experiment,
