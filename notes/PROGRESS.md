@@ -41,8 +41,9 @@ as aliases, so published runs stay comparable.
 | `cl_modes.py`, chain state threading (buffer/anchor/adapters) | DONE |
 | er / der_pp / ewc / lwf / freeze_extend wired | DONE |
 | `redelex/continual/adapters.py`, `drift.py`, `scripts/build_evaluation_matrix.py` | DONE + verified |
-| Smoke test all modes on rel-f1 | 6/7 clean; der_pp + ewc re-running after device fix |
-| **Main grid launch** | NEXT |
+| Smoke test all modes on rel-f1 | **8/8 validated end-to-end** |
+| Code review of the whole experiment | RUNNING (5 lenses + adversarial refutation) |
+| **Main grid launch** | HELD pending review GO/NO-GO |
 
 586 tests passing. 5 commits since the protocol work.
 
@@ -78,6 +79,8 @@ as aliases, so published runs stay comparable.
 | er | 1950 | 1999 (increment) | `replay_buffer_used=830` |
 | lwf | 1950 | 1999 (increment) | frozen teacher |
 | ewc | 1950 | 1999 (increment) | Fisher anchor |
+| der_pp | 1950 | 1999 (increment) | buffer + stored logits |
+| freeze_extend | 1950 | 1999 (increment) | 1 adapter: 4,240 trainable vs 5,067,905 frozen |
 
 The `er` row is the key one: the buffer filled during episode 1 (which runs as from_scratch for
 every method) and replayed at episode 2, confirming `chain_learning_mode` is threaded correctly.
