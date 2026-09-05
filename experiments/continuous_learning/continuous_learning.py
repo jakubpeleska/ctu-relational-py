@@ -166,6 +166,12 @@ def _update_chain_state(
     as ``from_scratch`` for every method and would otherwise leave the next episode
     with nothing to replay or anchor to.
     """
+    # Lightning leaves the model on CPU after `fit`, so everything below would run
+    # there -- a full inference pass over a 105k-row increment on rel-hm. Put it
+    # back on the training device first; the helpers then read the device off the
+    # model itself, so batches and parameters cannot disagree.
+    model.to(device)
+
     if chain_spec.uses_buffer:
         buffer = cl_state.buffer
         if buffer is None:
