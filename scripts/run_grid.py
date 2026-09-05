@@ -45,7 +45,10 @@ TIERS = {
           ("rel-ratebeer", "user-count"), ("rel-ratebeer", "brewer-dormant")],
 }
 
-DEFAULT_MODES = ["from_scratch", "ft_full", "ft_upsample", "ft_newonly"]
+# The roster: three reference points plus one mode per CL family. See
+# experiments/continuous_learning/cl_modes.py for why each earns a slot.
+DEFAULT_MODES = ["from_scratch", "joint", "naive", "er", "der_pp", "ewc", "lwf",
+                 "freeze_extend"]
 
 
 def parse_args(argv=None):

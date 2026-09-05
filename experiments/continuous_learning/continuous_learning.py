@@ -3,6 +3,7 @@ from typing import Any, Literal, Optional
 import copy
 from pathlib import Path
 
+import sys
 import traceback
 import os
 import random
@@ -27,6 +28,7 @@ from lightning.pytorch.utilities.model_summary import ModelSummary
 
 from torch_geometric.data import HeteroData
 from torch_geometric.loader import NeighborLoader
+import torch_geometric.transforms as T
 
 from relbench.base import Table, TaskType
 from relbench.datasets import get_dataset
@@ -44,7 +46,34 @@ from redelex.nn.train.utils import get_metrics
 
 from experiments.continuous_learning.continuous_task import ContinuousWrapper
 
+from experiments.continuous_learning.cl_modes import (
+    DEFAULT_ROSTER,
+    MODES,
+    MODE_ALIASES,
+    AttachAuxTransform,
+    CLState,
+    buffer_to_table,
+    make_der_penalty,
+    make_ewc_penalty,
+    make_lwf_penalty,
+    resolve_mode,
+)
+
+from redelex.continual.adapters import (
+    AdapterStack,
+    freeze_module,
+    parameter_counts,
+)
+from redelex.continual import (
+    ParameterAnchor,
+    ReservoirBuffer,
+    fisher_diagonal,
+    frozen_teacher,
+)
+
 from experiments.continuous_learning.models import HeterogeneousSAGE
+
+from redelex.utils.datetime import to_unix_time
 
 from experiments.continuous_learning.utils import (
     get_attribute_schema,
@@ -112,6 +141,148 @@ def get_resume_state_from_mlflow(
     return 1, None
 
 
+def _update_chain_state(
+    *,
+    cl_state,
+    chain_spec,
+    config,
+    model,
+    lightning_model,
+    train_loader,
+    wrapped_task,
+    task,
+    data,
+    train_start,
+    train_timestamp,
+    device,
+):
+    """Refresh the state a continual-learning chain carries into the next episode.
+
+    Weights already travel via ``best_model.pt``. Everything else a method needs --
+    the replay buffer, the EWC anchor -- has to be updated here and saved beside
+    them, or the method silently restarts every episode.
+
+    Driven by the CHAIN's mode rather than this episode's, because episode 1 runs
+    as ``from_scratch`` for every method and would otherwise leave the next episode
+    with nothing to replay or anchor to.
+    """
+    if chain_spec.uses_buffer:
+        buffer = cl_state.buffer
+        if buffer is None:
+            buffer = ReservoirBuffer(
+                capacity=int(config.get("buffer_size", 10_000)),
+                seed=int(config["seed"]),
+            )
+
+        # Offer this episode's increment to the buffer. Reservoir sampling keeps a
+        # uniform sample of the whole stream, so early episodes stay represented as
+        # history grows -- which is exactly what proportional mixing did not do.
+        increment = wrapped_task.get_table(start=train_start, end=train_timestamp)
+        df = increment.df
+        if len(df) > 0:
+            node_ids = df[task.entity_col].astype("int64").to_numpy()
+            timestamps = to_unix_time(df[increment.time_col])
+            targets = df[task.target_col].to_numpy(dtype="float64")
+
+            logits = None
+            if chain_spec.distil_stored_logits:
+                logits = _predict_logits(
+                    model=model,
+                    table=increment,
+                    task=task,
+                    data=data,
+                    config=config,
+                    device=device,
+                )
+
+            buffer.add(
+                node_ids, timestamps=timestamps, targets=targets, logits=logits
+            )
+        cl_state.buffer = buffer
+        config["replay_buffer_size"] = len(buffer)
+        config["replay_buffer_seen"] = buffer.seen
+        print(
+            f"Replay buffer: {len(buffer)}/{buffer.capacity} held, {buffer.seen} seen",
+            flush=True,
+        )
+
+    if chain_spec.freeze_backbone and getattr(model, "adapters", None) is not None:
+        cl_state.adapters = model.adapters.state_dict()
+
+    if chain_spec.uses_anchor:
+        anchor = cl_state.anchor
+        if anchor is None:
+            anchor = ParameterAnchor(
+                lam=float(config.get("ewc_lambda", 100.0)),
+                gamma=float(config.get("ewc_gamma", 0.9)),
+            )
+        fisher = fisher_diagonal(
+            model,
+            batches=_batches_on(train_loader, next(model.parameters()).device),
+            loss_fn=lightning_model.loss_fn,
+            forward_fn=lambda m, b: lightning_model(b)[0].float(),
+            target_fn=lambda b: lightning_model(b)[1],
+            max_batches=int(config.get("fisher_batches", 64)),
+        )
+        anchor.consolidate(model, fisher)
+        cl_state.anchor = anchor
+        print(
+            f"EWC anchor consolidated over {len(anchor)} tensors "
+            f"({anchor.episodes} episode(s))",
+            flush=True,
+        )
+
+
+def _batches_on(loader, device):
+    """Yield batches on `device`.
+
+    Lightning moves batches during `fit`, but anything run afterwards -- the Fisher
+    pass, the DER++ logit capture -- gets raw loader output and has to move them
+    itself, or the forward hits "at least two devices, cuda:0 and cpu".
+    """
+    for batch in loader:
+        yield batch.to(device)
+
+
+@torch.no_grad()
+def _predict_logits(*, model, table, task, data, config, device):
+    """Model outputs for every row of a table, for DER++ to store alongside it.
+
+    DER++ distils against the logit the model produced *when the exemplar was
+    stored*, so these must be captured at the end of the episode that saw them.
+    """
+    was_training = model.training
+    # Take the device from the model rather than the caller: after `trainer.fit`
+    # the model is wherever Lightning left it, which is not necessarily `device`.
+    device = next(model.parameters()).device
+    model.eval()
+    try:
+        table_input = get_table_input(table, task)
+        gnn_layers = config["gnn_layers"]
+        num_neighbors = config["num_neighbors"]
+        loader = NeighborLoader(
+            data,
+            num_neighbors=[int(num_neighbors / 2**i) for i in range(gnn_layers)],
+            time_attr="time",
+            input_nodes=table_input.nodes,
+            input_time=table_input.time,
+            transform=table_input.transform,
+            batch_size=config["batch_size"],
+            temporal_strategy="uniform",
+            shuffle=False,
+        )
+        out = []
+        for batch in loader:
+            batch = batch.to(device)
+            pred = model(batch, task.entity_table)
+            pred = pred.view(-1) if pred.size(-1) == 1 else pred
+            out.append(pred[: batch[task.entity_table].batch_size].detach().cpu())
+        return torch.cat(out).numpy().astype("float64") if out else None
+    finally:
+        if was_training:
+            model.train()
+
+
 def run_continuous_learning_experiment(
     config: dict[str, Any],
     with_ray: bool = True,
@@ -165,17 +336,29 @@ def run_continuous_learning_experiment(
     val_timestamp = config["val_timestamp"]
     prev_train_timestamp: Optional[pd.Timestamp] = config.get("prev_train_timestamp", None)
 
-    assert learning_mode in ["from_scratch", "ft_full", "ft_upsample", "ft_newonly"]
+    # `learning_mode` is what THIS episode runs (episode 1 is always from_scratch);
+    # `chain_learning_mode` is what the chain is, and it decides which state has to
+    # be carried forward -- a replay buffer must be filled during episode 1 even
+    # though episode 1 itself trains from scratch, or episode 2 starts empty.
+    chain_learning_mode: str = config.get("chain_learning_mode", learning_mode)
+    spec = resolve_mode(learning_mode)
+    chain_spec = resolve_mode(chain_learning_mode)
+    cl_state_path: Optional[str] = config.get("cl_state_path", None)
 
-    if learning_mode != "from_scratch":
+    if spec.warm_start:
         assert (
             weights_path is not None
-        ), "weights_path must be provided for fine-tuning modes"
+        ), f"weights_path must be provided for mode {spec.name}"
 
-    if learning_mode in ["ft_upsample", "ft_newonly"]:
+    if spec.needs_prev_timestamp:
         assert (
             prev_train_timestamp is not None
-        ), "prev_train_timestamp must be provided for ft_upsample and ft_newonly modes"
+        ), f"prev_train_timestamp must be provided for mode {spec.name}"
+
+    cl_state = CLState()
+    if cl_state_path is not None and Path(cl_state_path).exists():
+        cl_state = CLState.load(cl_state_path)
+        print(f"Loaded CL state from {cl_state_path}", flush=True)
 
     dataset = get_dataset(dataset_name, download=False)
     db = dataset.get_db(upto_test_timestamp=False)
@@ -221,15 +404,57 @@ def run_continuous_learning_experiment(
         norm=config["head_norm"],
     )
 
+    # Parameter isolation: rebuild the adapter stack this chain has accumulated, so
+    # the checkpoint's adapter tensors have somewhere to land.
+    adapter_stack = None
+    if chain_spec.freeze_backbone:
+        adapter_stack = AdapterStack(
+            channels=gnn_channels, rank=int(config.get("adapter_rank", 16))
+        )
+        if cl_state.adapters is not None:
+            adapter_stack.load_state_dict(cl_state.adapters)
+        model.adapters = adapter_stack
+
     # optionally load weights from previous split
     if weights_path is not None:
-        model.load_state_dict(torch.load(weights_path))
+        # strict=False for freeze_extend only: the adapter stack grows by one module
+        # per episode, so a checkpoint never has exactly the keys of the model that
+        # is about to extend it.
+        model.load_state_dict(
+            torch.load(weights_path), strict=not chain_spec.freeze_backbone
+        )
 
-    if learning_mode in ["from_scratch", "ft_full"]:
-        train_start = db.min_timestamp
-    elif learning_mode in ["ft_upsample", "ft_newonly"]:
-        train_start = prev_train_timestamp
-        
+    if spec.freeze_backbone:
+        # Freeze everything learned so far and train only newly added capacity.
+        # This is what makes the mode forget nothing by construction.
+        for module in (
+            model.row_encoder,
+            model.temporal_encoder,
+            model.gnn,
+            model.head,
+        ):
+            # freeze_module returns a count of TENSORS; every number reported here
+            # is a count of ELEMENTS, so its return value is deliberately discarded
+            # rather than logged next to element counts as if comparable.
+            freeze_module(module)
+
+        new_adapter = adapter_stack.add_adapter()
+        counts = parameter_counts(model)
+        added = sum(p.numel() for p in new_adapter.parameters())
+        config["frozen_parameters"] = counts["frozen"]
+        config["trainable_parameters"] = counts["trainable"]
+        config["adapter_parameters"] = added
+        config["n_adapters"] = adapter_stack.n_adapters
+        print(
+            f"freeze_extend: adapter #{adapter_stack.n_adapters} adds {added:,} "
+            f"parameters; {counts['trainable']:,}/{counts['total']:,} trainable, "
+            f"{counts['frozen']:,} frozen",
+            flush=True,
+        )
+
+    train_start = (
+        db.min_timestamp if spec.train_window == "full" else prev_train_timestamp
+    )
     config["train_start"] = train_start
 
     # create train dataloader for current split
@@ -246,25 +471,81 @@ def run_continuous_learning_experiment(
         temporal_strategy="uniform",
         shuffle=True,
     )
-    if learning_mode == "ft_upsample":
-        # for upsampling we create two loaders for new increment and
-        # old data and sample from them with 0.5 probability each
-        old_train_table = wrapped_task.get_table(
-            start=db.min_timestamp, end=prev_train_timestamp
-        )
-        old_train_input = get_table_input(old_train_table, task)
-        old_train_loader = NeighborLoader(
+    def _make_loader(table_input, transform=None):
+        return NeighborLoader(
             data,
             num_neighbors=[int(num_neighbors / 2**i) for i in range(gnn_layers)],
             time_attr="time",
-            input_nodes=old_train_input.nodes,
-            input_time=old_train_input.time,
-            transform=old_train_input.transform,
+            input_nodes=table_input.nodes,
+            input_time=table_input.time,
+            transform=transform if transform is not None else table_input.transform,
             batch_size=batch_size,
             temporal_strategy="uniform",
             shuffle=True,
         )
-        train_loader = ComposedLoader({"new": train_loader, "old": old_train_loader}, mode="rnd_uni")
+
+    replay_ratio: float = config.get("replay_ratio", 0.5)
+
+    if spec.legacy and spec.name == "ft_upsample":
+        # Reproduction path only. `rnd_uni` mixes proportionally to loader size, so
+        # the new-data share decays from ~50% to a few percent as history grows --
+        # see analysis/upsampling-ratio-finding.md. Kept to reproduce the submitted
+        # paper, never used by the roster.
+        old_train_table = wrapped_task.get_table(
+            start=db.min_timestamp, end=prev_train_timestamp
+        )
+        old_train_loader = _make_loader(get_table_input(old_train_table, task))
+        train_loader = ComposedLoader(
+            {"new": train_loader, "old": old_train_loader}, mode="rnd_uni"
+        )
+
+    elif spec.uses_buffer and cl_state.buffer is not None and len(cl_state.buffer) > 0:
+        # Bounded replay: the buffer holds a uniform sample of everything seen so
+        # far, capped at `buffer_size`. Unlike ft_upsample the ratio is explicit and
+        # honoured, because `weighted` draws by configured proportion rather than by
+        # loader size.
+        replay_table = buffer_to_table(
+            cl_state.buffer,
+            entity_col=task.entity_col,
+            time_col=wrapped_task.full_table.time_col,
+            target_col=task.target_col,
+            template=wrapped_task.full_table,
+        )
+        replay_input = get_table_input(replay_table, task)
+
+        replay_transform = replay_input.transform
+        if spec.distil_stored_logits:
+            # DER++ distils against the logits recorded at insertion time, so each
+            # replayed example must carry its own stored logit. Indexed by
+            # `input_id`, exactly as the target is.
+            ordered_logits = torch.as_tensor(
+                replay_table.df[task.entity_col]
+                .map(
+                    dict(
+                        zip(
+                            cl_state.buffer.node_ids.tolist(),
+                            cl_state.buffer.logits.tolist(),
+                        )
+                    )
+                )
+                .to_numpy(dtype="float32")
+            )
+            replay_transform = T.Compose(
+                [
+                    replay_input.transform,
+                    AttachAuxTransform(
+                        task.entity_table, "teacher_logit", ordered_logits
+                    ),
+                ]
+            )
+
+        replay_loader = _make_loader(replay_input, transform=replay_transform)
+        train_loader = ComposedLoader(
+            {"new": train_loader, "old": replay_loader},
+            mode="weighted",
+            weights={"new": replay_ratio, "old": 1.0 - replay_ratio},
+        )
+        config["replay_buffer_used"] = len(cl_state.buffer)
 
     # create val dataloader for current split
     val_table = wrapped_task.get_table(start=train_timestamp, end=val_timestamp)
@@ -301,7 +582,12 @@ def run_continuous_learning_experiment(
         shuffle=False,
     )
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    # Only trainable parameters: freeze_extend leaves most of the model frozen, and
+    # handing Adam frozen tensors would build optimiser state for parameters that
+    # never move.
+    optimizer = torch.optim.Adam(
+        [p for p in model.parameters() if p.requires_grad], lr=lr
+    )
 
     val_check_interval: Optional[int] = config.get("val_check_interval", None)
 
@@ -330,6 +616,32 @@ def run_continuous_learning_experiment(
         },
         modes=("val",)
     )
+
+    # --- continual-learning penalty terms -----------------------------------
+    # Attached to the wrapper rather than passed to its constructor, so the
+    # wrapper stays usable by every other experiment without knowing about CL.
+    if spec.uses_anchor and cl_state.anchor is not None:
+        lightning_model.cl_penalty = make_ewc_penalty(cl_state.anchor)
+        print(
+            f"EWC active: lambda={cl_state.anchor.lam}, "
+            f"{len(cl_state.anchor)} anchored tensors from "
+            f"{cl_state.anchor.episodes} episode(s)",
+            flush=True,
+        )
+    elif spec.uses_teacher and weights_path is not None:
+        # LwF distils from the previous episode's model on current data. The
+        # teacher is a frozen copy loaded from the same checkpoint the student
+        # warm-started from, so it is exactly "the model before this episode".
+        teacher = frozen_teacher(model).to(device)
+        lightning_model.cl_penalty = make_lwf_penalty(
+            teacher, task.entity_table, weight=config.get("lwf_alpha", 1.0)
+        )
+        print("LwF active: distilling from the previous episode's model", flush=True)
+    elif spec.distil_stored_logits:
+        lightning_model.cl_penalty = make_der_penalty(
+            task.entity_table, alpha=config.get("der_alpha", 0.5)
+        )
+        print("DER++ active: distilling against stored logits", flush=True)
 
     model_summary = ModelSummary(lightning_model, max_depth=2)
 
@@ -394,6 +706,26 @@ def run_continuous_learning_experiment(
             ckpt_path=None,
         )
 
+        # --- carry state to the next episode --------------------------------
+        # Follows the CHAIN's mode, not this episode's: episode 1 trains from
+        # scratch for every method, but an ER chain still has to fill its buffer
+        # there or episode 2 replays nothing.
+        _update_chain_state(
+            cl_state=cl_state,
+            chain_spec=chain_spec,
+            config=config,
+            model=model,
+            lightning_model=lightning_model,
+            train_loader=train_loader,
+            wrapped_task=wrapped_task,
+            task=task,
+            data=data,
+            train_start=train_start,
+            train_timestamp=train_timestamp,
+            device=device,
+        )
+        cl_state.save(Path(model_save_dir) / CLState.FILENAME)
+
         if with_ray:
             best_val_metric = trainer.callback_metrics.get(f"best_val_{val_metric}")
             if best_val_metric is not None:
@@ -428,6 +760,13 @@ def run_ray_tuner(
     max_training_steps: int = 2000,
     val_check_interval: Optional[int] = 100,
     val_max_rows: Optional[int] = 25_000,
+    buffer_size: int = 10_000,
+    replay_ratio: float = 0.5,
+    der_alpha: float = 0.5,
+    ewc_lambda: float = 100.0,
+    ewc_gamma: float = 0.9,
+    lwf_alpha: float = 1.0,
+    fisher_batches: int = 64,
     cache_dir: str = ".cache",
     model_save_dir: str = "./models",
     resume: bool = False,
@@ -497,6 +836,7 @@ def run_ray_tuner(
     del wrapped_task
     del task
     best_weights_path = None
+    best_cl_state_path = None
     
     model_save_dir = Path(model_save_dir).absolute()
     
@@ -518,13 +858,14 @@ def run_ray_tuner(
             
     if start_inc >= len(splits) - 1:
         print("All increments are already completed according to MLflow. Exiting.")
-        return
+        return {"completed": 0, "expected": 0}
 
     last_inc = len(splits) - 1
     if max_increments is not None:
         last_inc = min(last_inc, start_inc + max_increments)
         print(f"Limiting to {max_increments} increment(s): {start_inc}..{last_inc - 1}")
 
+    completed = 0
     for i in range(start_inc, last_inc):
         train_timestamp = splits[i]
         val_timestamp = splits[i+1]
@@ -556,6 +897,9 @@ def run_ray_tuner(
                 "dataset_name": dataset_name,
                 "task_name": task_name,
                 "learning_mode": current_learning_mode,
+                # what the chain is, versus what this episode runs -- episode 1 is
+                # always from_scratch, but its buffer/anchor must still be built
+                "chain_learning_mode": learning_mode,
                 "seed": tune.grid_search(seeds),
                 "text_embedder_name": "glove",
                 "mlflow_experiment": mlflow_experiment,
@@ -569,6 +913,15 @@ def run_ray_tuner(
                 "val_timestamp": val_timestamp,
                 "prev_train_timestamp": prev_train_timestamp,
                 "weights_path": best_weights_path if learning_mode != "from_scratch" else None,
+                "cl_state_path": best_cl_state_path,
+                # CL method hyperparameters, logged with every run
+                "buffer_size": buffer_size,
+                "replay_ratio": replay_ratio,
+                "der_alpha": der_alpha,
+                "ewc_lambda": ewc_lambda,
+                "ewc_gamma": ewc_gamma,
+                "lwf_alpha": lwf_alpha,
+                "fisher_batches": fisher_batches,
                 "lr": 0.001,
                 "batch_size": 128,
                 "num_neighbors": 32,
@@ -600,7 +953,21 @@ def run_ray_tuner(
             print(f"Failed to find the best result in split {i}. Stopping.")
             break
         
+        completed += 1
         best_weights_path = f"{best_result.metrics['model_save_dir']}/best_model.pt"
+        # The buffer/anchor of the *selected* trial travel forward with its weights,
+        # so the chain state always matches the checkpoint it was produced with.
+        candidate_state = Path(best_result.metrics["model_save_dir"]) / CLState.FILENAME
+        best_cl_state_path = str(candidate_state) if candidate_state.exists() else None
+
+    expected = max(last_inc - start_inc, 0)
+    if completed < expected:
+        print(
+            f"INCOMPLETE: {completed}/{expected} increments finished for "
+            f"{dataset_name}/{task_name} [{learning_mode}]",
+            flush=True,
+        )
+    return {"completed": completed, "expected": expected}
 
 
 
@@ -644,7 +1011,23 @@ if __name__ == "__main__":
              "auto-selection. Use when an external scheduler owns the allocation.",
     )
     parser.add_argument("--num_cpus", type=int, default=1)
-    parser.add_argument("--learning_mode", type=str, choices=["from_scratch", "ft_full", "ft_upsample", "ft_newonly"], default="from_scratch")
+    parser.add_argument(
+        "--learning_mode", type=str, default="from_scratch",
+        choices=sorted(set(MODES) | set(MODE_ALIASES)),
+        help="Roster: " + ", ".join(DEFAULT_ROSTER)
+             + ". ft_full/ft_newonly are aliases of joint/naive; ft_upsample is "
+               "retained only to reproduce the submitted paper.",
+    )
+    parser.add_argument("--buffer_size", type=int, default=10_000,
+                        help="Replay buffer capacity for er/der_pp.")
+    parser.add_argument("--replay_ratio", type=float, default=0.5,
+                        help="Share of each epoch drawn from the new increment.")
+    parser.add_argument("--der_alpha", type=float, default=0.5)
+    parser.add_argument("--ewc_lambda", type=float, default=100.0)
+    parser.add_argument("--ewc_gamma", type=float, default=0.9)
+    parser.add_argument("--lwf_alpha", type=float, default=1.0)
+    parser.add_argument("--fisher_batches", type=int, default=64)
+
     parser.add_argument("--model_save_dir", type=str, default="./models")
     parser.add_argument("--resume", action="store_true", default=False)
     
@@ -654,7 +1037,7 @@ if __name__ == "__main__":
     dataset_name = args.dataset
     task_name = args.task
 
-    run_ray_tuner(
+    summary = run_ray_tuner(
         dataset_name,
         task_name,
         ray_address=args.ray_address,
@@ -670,6 +1053,13 @@ if __name__ == "__main__":
         max_training_steps=args.max_training_steps,
         val_check_interval=args.val_check_interval or None,
         val_max_rows=args.val_max_rows or None,
+        buffer_size=args.buffer_size,
+        replay_ratio=args.replay_ratio,
+        der_alpha=args.der_alpha,
+        ewc_lambda=args.ewc_lambda,
+        ewc_gamma=args.ewc_gamma,
+        lwf_alpha=args.lwf_alpha,
+        fisher_batches=args.fisher_batches,
         gpu_ids=args.gpu_ids,
         mlflow_experiment=args.mlflow_experiment,
         random_seed=args.seed,
@@ -680,3 +1070,9 @@ if __name__ == "__main__":
         model_save_dir=args.model_save_dir,
         resume=args.resume,
     )
+
+    # A chain that stopped early must not look like success: scripts/run_grid.py
+    # writes its "done" marker on exit code 0, so a silent early stop would be
+    # recorded as a complete cell and never retried.
+    if summary and summary["completed"] < summary["expected"]:
+        sys.exit(1)

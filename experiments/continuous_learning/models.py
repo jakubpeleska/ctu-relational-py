@@ -18,6 +18,7 @@ class HeterogeneousSAGE(torch.nn.Module):
         gnn_aggr: str = "sum",
         out_channels: int = 1,
         norm: str = "batch_norm",
+        adapters: Optional[torch.nn.Module] = None,
     ):
         super().__init__()
 
@@ -46,6 +47,11 @@ class HeterogeneousSAGE(torch.nn.Module):
             norm=norm,
             num_layers=1,
         )
+
+        # Optional parameter-isolation stack, applied to the entity embedding just
+        # before the head. Kept outside the frozen backbone so `freeze_extend` can
+        # freeze everything above and train only newly added capacity.
+        self.adapters = adapters
 
         self.reset_parameters()
 
@@ -79,6 +85,11 @@ class HeterogeneousSAGE(torch.nn.Module):
         )
 
         if hasattr(batch[entity_table], "seed_time"):
-            return self.head(x_dict[entity_table][: seed_time.size(0)])
+            embedding = x_dict[entity_table][: seed_time.size(0)]
+        else:
+            embedding = x_dict[entity_table]
 
-        return self.head(x_dict[entity_table])
+        if self.adapters is not None:
+            embedding = self.adapters(embedding)
+
+        return self.head(embedding)
