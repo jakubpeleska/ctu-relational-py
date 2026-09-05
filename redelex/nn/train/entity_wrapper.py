@@ -1,5 +1,5 @@
 import copy
-from typing import Optional, Union
+from typing import Callable, Optional, Union
 
 import lightning as L
 import torch
@@ -31,6 +31,10 @@ class LightningEntityTaskWrapper(L.LightningModule):
         self.model = model
         self.task = task
         self.loss_fn = get_loss(self.task.task_type)
+
+        # Optional extra loss term, supplied by continual-learning methods.
+        # Signature: fn(pl_module, batch, pred, target) -> Tensor | None
+        self.cl_penalty: Optional[Callable] = None
         self.val_metrics, self.tune_metric, self.higher_is_better = get_metrics(
             self.task.task_type, num_classes=getattr(task, "num_classes", None)
         )
@@ -73,6 +77,21 @@ class LightningEntityTaskWrapper(L.LightningModule):
         pred, target = self(batch)
         loss = self.loss_fn(pred.float(), target)
         batch_size = pred.size(0)
+
+        # Continual-learning methods add a term here (EWC's quadratic anchor, LwF's
+        # distillation, DER++'s logit term). Set as an attribute rather than a
+        # constructor argument so the wrapper stays usable by every other
+        # experiment in the repo without knowing about CL at all.
+        if self.cl_penalty is not None:
+            penalty = self.cl_penalty(self, batch, pred, target)
+            if penalty is not None:
+                loss = loss + penalty
+                self.log(
+                    "train_cl_penalty",
+                    penalty.detach(),
+                    prog_bar=False,
+                    batch_size=batch_size,
+                )
 
         self.train_loss.update(loss.detach(), batch_size)
 
