@@ -3,7 +3,7 @@
 **Entry point for any new session.** Read this, then `notes/DECISIONS.md`.
 Plan: `~/.claude/plans/happy-twirling-lantern.md`
 
-Target: ICLR 2027, ~3 weeks from 2026-09-02. Anytime-shaped: every phase leaves a submittable paper.
+Target: ICLR 2027. HARD DEADLINE: results by ~2026-09-16 (12 days from 2026-09-04).
 Priority: (1) integrate real CL techniques, (2) add datasets or rigorously argue exclusions.
 
 ---
@@ -26,6 +26,61 @@ Priority: (1) integrate real CL techniques, (2) add datasets or rigorously argue
 | Phase 1: Parameter isolation family | TODO |
 | Phase 1: LwF distillation | TODO |
 | Phase 2: HeteroGAT backbone seam, dI ablation | TODO |
+
+## Current phase: Phase 1 — CL methods wired and smoke-tested (2026-09-05)
+
+**Roster is 8 modes** (`experiments/continuous_learning/cl_modes.py` explains why each earns a slot):
+`from_scratch`, `joint` (was ft_full), `naive` (was ft_newonly), `er`, `der_pp`, `ewc`, `lwf`,
+`freeze_extend`. `ft_upsample` kept ONLY to reproduce the submitted paper. Old names still resolve
+as aliases, so published runs stay comparable.
+
+| step | status |
+|---|---|
+| Evaluation-protocol fix (step-based val, 25k cap) | DONE |
+| `cl_penalty` hook on the wrapper | DONE |
+| `cl_modes.py`, chain state threading (buffer/anchor/adapters) | DONE |
+| er / der_pp / ewc / lwf / freeze_extend wired | DONE |
+| `redelex/continual/adapters.py`, `drift.py`, `scripts/build_evaluation_matrix.py` | DONE + verified |
+| Smoke test all modes on rel-f1 | 6/7 clean; der_pp + ewc re-running after device fix |
+| **Main grid launch** | NEXT |
+
+586 tests passing. 5 commits since the protocol work.
+
+## Bugs found by adversarial verification (all fixed, all had regression tests added)
+
+1. **`AdapterStack` strict=False load wiped the stack.** "No adapter keys" was read as "zero
+   adapters" and the stack was rebuilt empty -- and `freeze_extend` loads with `strict=False`
+   precisely. Any chain seeded from a checkpoint without adapters silently lost every adapter and
+   the zero-forgetting guarantee, reporting no missing keys and no warning.
+2. **Freeze invariant restored only on the rebuild path**, so a same-shaped load inherited whatever
+   requires_grad state the destination had.
+3. **`add_adapter` was not exception-safe** -- froze before constructing, so a failed construction
+   left nothing trainable.
+4. **Post-fit passes ran on the wrong device.** Lightning leaves the model on CPU after `fit`.
+   DER++ died; EWC only worked by coincidence. Invisible because `log_to_driver=False` swallows
+   worker output -- the traceback existed only as an MLflow param.
+5. **Early-stopped chains exited 0**, so `run_grid.py` wrote done-markers for incomplete cells that
+   would never be retried. Now exits non-zero.
+6. **PSI returned 0.0 for imbalanced/binary targets** (5% -> 100% read as "no shift"), including a
+   residual at `bins=2` -- the value a caller would naturally pass for a binary target.
+7. **`target_drift` docstring recommended a measure that returns 0.0** on a total class-prior
+   reversal (PSI consumes samples, not probability vectors).
+8. **A test named for column filtering never reached the filter**; the filter was also weaker than
+   its comment, so a data column named like a checkpoint would have been scored as a model.
+
+## Smoke-test evidence the CL machinery engages
+
+| mode | ep1 train window | ep2 train window | chain state |
+|---|---|---|---|
+| from_scratch | 1950 (full) | 1950 (full) | - |
+| joint | 1950 | 1950 (full) | - |
+| naive | 1950 | 1999 (increment) | - |
+| er | 1950 | 1999 (increment) | `replay_buffer_used=830` |
+| lwf | 1950 | 1999 (increment) | frozen teacher |
+| ewc | 1950 | 1999 (increment) | Fisher anchor |
+
+The `er` row is the key one: the buffer filled during episode 1 (which runs as from_scratch for
+every method) and replayed at episode 2, confirming `chain_learning_mode` is threaded correctly.
 
 ## Key context a new session needs
 
