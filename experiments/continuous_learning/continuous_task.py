@@ -36,28 +36,72 @@ class ContinuousWrapper:
             time_col=self.full_table.time_col,
         )
 
-    def get_splits(self, val_delta: pd.Timedelta = None):
+    def get_splits(
+        self,
+        val_delta: pd.Timedelta = None,
+        align: str = "data",
+        min_rows_frac: float = 0.1,
+    ):
+        r"""Episode boundaries for the incremental protocol.
+
+        Args:
+            val_delta: Episode width. Defaults to the dataset's own validation
+                window (``test_timestamp - val_timestamp``), which makes the
+                increment size an accident of how the benchmark happened to split
+                the data rather than a controlled variable. Cannot usefully go
+                below the task's ``timedelta``.
+            align: ``"data"`` walks the task's own observed timestamps, which is
+                what every published run did. ``"calendar"`` steps back from
+                ``val_timestamp`` in fixed ``val_delta`` strides regardless of
+                where rows happen to fall, so **two tasks on the same database
+                given the same width get the same interior boundaries** and their
+                episodes can be compared row for row.
+            min_rows_frac: Drop an episode holding less than this fraction of the
+                validation window's row count. Set to 0 to keep every boundary --
+                necessary if alignment must hold exactly, since the filter is
+                per-task and can otherwise remove different boundaries for
+                different tasks.
+
+        Returns:
+            Increasing list of boundaries. ``splits[0]`` is the first data
+            timestamp, ``splits[-2]`` is ``val_timestamp`` and ``splits[-1]`` is
+            ``test_timestamp``; episode ``i`` covers ``[splits[i], splits[i+1])``.
+        """
         if val_delta is None:
             val_delta = (
                 self.task.dataset.test_timestamp - self.task.dataset.val_timestamp
             )
+        if align not in ("data", "calendar"):
+            raise ValueError(f"`align` must be 'data' or 'calendar', got {align!r}")
 
         timestamps = self.full_table.df[self.full_table.time_col].unique()
+        first_timestamp = timestamps[0]
 
         splits = [self.task.dataset.test_timestamp, self.task.dataset.val_timestamp]
 
-        previous_timestamp = self.task.dataset.val_timestamp
-        for timestamp in reversed(timestamps):
-            if timestamp + val_delta <= previous_timestamp:
+        if align == "calendar":
+            # A fixed stride from val_timestamp. Independent of where rows land, so
+            # the grid is a property of the database and the chosen width, not of
+            # the task -- which is what lets tasks be aligned to each other.
+            boundary = self.task.dataset.val_timestamp - val_delta
+            while boundary > first_timestamp:
+                splits.append(boundary)
+                boundary = boundary - val_delta
+        else:
+            previous_timestamp = self.task.dataset.val_timestamp
+            for timestamp in reversed(timestamps):
+                if timestamp + val_delta <= previous_timestamp:
+                    splits.append(timestamp)
+                    previous_timestamp = timestamp
 
-                splits.append(timestamp)
-                previous_timestamp = timestamp
-
-        splits.append(timestamps[0])
+        splits.append(first_timestamp)
         splits.reverse()
 
+        if min_rows_frac <= 0:
+            return splits
+
         min_split_len = int(
-            0.1
+            min_rows_frac
             * len(
                 self.get_table(
                     start=self.task.dataset.val_timestamp,

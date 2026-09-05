@@ -766,6 +766,7 @@ def run_ray_tuner(
     max_training_steps: int = 2000,
     val_check_interval: Optional[int] = 100,
     val_max_rows: Optional[int] = 25_000,
+    val_delta_days: Optional[float] = None,
     buffer_size: int = 10_000,
     replay_ratio: float = 0.5,
     der_alpha: float = 0.5,
@@ -838,7 +839,20 @@ def run_ray_tuner(
     _, val_metric, higher_is_better = get_metrics(
         task.task_type, num_classes=getattr(task, "num_classes", None)
     )
-    splits = copy.deepcopy(wrapped_task.get_splits())
+    # Episode width. Defaults to the dataset's own validation window
+    # (test_timestamp - val_timestamp), which is what every published run used and
+    # what makes the increment size an accident of how RelBench happened to split
+    # the data rather than a controlled variable. `--val_delta_days` makes it one.
+    split_delta = (
+        pd.Timedelta(days=val_delta_days) if val_delta_days is not None else None
+    )
+    splits = copy.deepcopy(wrapped_task.get_splits(val_delta=split_delta))
+    if split_delta is not None:
+        print(
+            f"Episode width overridden to {val_delta_days} days: "
+            f"{len(splits) - 2} episodes (default gives the val-window width)",
+            flush=True,
+        )
     del wrapped_task
     del task
     best_weights_path = None
@@ -914,6 +928,7 @@ def run_ray_tuner(
                 "limit_train_batches": 100,
                 "val_check_interval": val_check_interval,
                 "val_max_rows": val_max_rows,
+                "val_delta_days": val_delta_days,
                 "increment": i,
                 "train_timestamp": train_timestamp,
                 "val_timestamp": val_timestamp,
@@ -1024,6 +1039,13 @@ if __name__ == "__main__":
              + ". ft_full/ft_newonly are aliases of joint/naive; ft_upsample is "
                "retained only to reproduce the submitted paper.",
     )
+    parser.add_argument(
+        "--val_delta_days", type=float, default=None,
+        help="Episode width in days. Default: the dataset's validation window "
+             "(test_timestamp - val_timestamp). Set this to sweep increment size; "
+             "it cannot go below the task's own timedelta, and the 10%% row filter "
+             "will silently drop episodes that come out too small.",
+    )
     parser.add_argument("--buffer_size", type=int, default=10_000,
                         help="Replay buffer capacity for er/der_pp.")
     parser.add_argument("--replay_ratio", type=float, default=0.5,
@@ -1059,6 +1081,7 @@ if __name__ == "__main__":
         max_training_steps=args.max_training_steps,
         val_check_interval=args.val_check_interval or None,
         val_max_rows=args.val_max_rows or None,
+        val_delta_days=args.val_delta_days,
         buffer_size=args.buffer_size,
         replay_ratio=args.replay_ratio,
         der_alpha=args.der_alpha,
