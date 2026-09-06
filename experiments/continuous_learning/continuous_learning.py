@@ -369,6 +369,15 @@ def run_continuous_learning_experiment(
 
     device = torch.device("cpu")
 
+    # One thread per trial, ALWAYS -- not only when a GPU is present. This used to
+    # sit inside the `torch.cuda.is_available()` branch, so a CPU run silently got
+    # torch's default of one thread per core (64 here). That is the worst setting
+    # available: measured on this box, 8 threads buy only 2.2x on a training step
+    # (per-core efficiency 0.27) while 32 single-threaded processes hold 0.74-0.80
+    # efficiency. Oversubscribing threads across concurrent trials is strictly
+    # worse than running more trials.
+    torch.set_num_threads(int(config.get("torch_threads", 1)))
+
     if with_ray:
         context = ray_train.get_context()
         trial_name = context.get_trial_name()
@@ -376,14 +385,12 @@ def run_continuous_learning_experiment(
         print(f"Resources: {resources}")
         if torch.cuda.is_available():
             device = torch.device("cuda")
-            torch.set_num_threads(1)
     else:
         allow_gpu = config.get("allow_gpu", False)
         if allow_gpu and torch.cuda.is_available():
             device = torch.device("cuda")
-            torch.set_num_threads(1)
         trial_name = f"pretrain_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-    print("Device:", device)
+    print(f"Device: {device} | torch threads: {torch.get_num_threads()}")
 
     dataset_name: str = config["dataset_name"]
     task_name: str = config["task_name"]
@@ -836,6 +843,8 @@ def run_ray_tuner(
     val_check_interval: Optional[int] = 100,
     val_max_rows: Optional[int] = 25_000,
     val_delta_days: Optional[float] = None,
+    cpus_per_trial: int = 2,
+    torch_threads: int = 1,
     buffer_size: int = 10_000,
     replay_ratio: float = 0.5,
     der_alpha: float = 0.5,
@@ -899,7 +908,11 @@ def run_ray_tuner(
     print(f"Ray resources: {resources}")
 
     gpus_used = 0
-    cpus_used = 2
+    # CPU-only runs are process-parallel, one core each: threads scale badly here
+    # (8 threads -> 2.2x) while processes scale well (32-way -> 0.74-0.80
+    # efficiency), and there is a hard throughput cliff past ~32 concurrent
+    # trials on this 64-physical-core box.
+    cpus_used = int(cpus_per_trial)
     if "GPU" in resources:
         gpus_used = 1
 
@@ -1022,6 +1035,7 @@ def run_ray_tuner(
                 "val_check_interval": val_check_interval,
                 "val_max_rows": val_max_rows,
                 "val_delta_days": val_delta_days,
+                "torch_threads": torch_threads,
                 "increment": i,
                 "train_timestamp": train_timestamp,
                 "val_timestamp": val_timestamp,
@@ -1139,6 +1153,17 @@ if __name__ == "__main__":
              "it cannot go below the task's own timedelta, and the 10%% row filter "
              "will silently drop episodes that come out too small.",
     )
+    parser.add_argument(
+        "--cpus_per_trial", type=int, default=2,
+        help="CPU cores Ray reserves per trial. Use 1 for CPU-only runs: threads "
+             "scale badly (8 threads buy 2.2x) while processes scale well.",
+    )
+    parser.add_argument(
+        "--torch_threads", type=int, default=1,
+        help="torch intra-op threads per trial. Keep at 1 unless running a single "
+             "trial alone; oversubscribing across concurrent trials is worse than "
+             "running more trials.",
+    )
     parser.add_argument("--buffer_size", type=int, default=10_000,
                         help="Replay buffer capacity for er/der_pp.")
     parser.add_argument("--replay_ratio", type=float, default=0.5,
@@ -1175,6 +1200,8 @@ if __name__ == "__main__":
         val_check_interval=args.val_check_interval or None,
         val_max_rows=args.val_max_rows or None,
         val_delta_days=args.val_delta_days,
+        cpus_per_trial=args.cpus_per_trial,
+        torch_threads=args.torch_threads,
         buffer_size=args.buffer_size,
         replay_ratio=args.replay_ratio,
         der_alpha=args.der_alpha,

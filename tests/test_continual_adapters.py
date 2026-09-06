@@ -191,7 +191,8 @@ def test_training_the_newest_adapter_leaves_older_ones_untouched(x):
         stack(x).pow(2).sum().backward()
         optimizer.step()
 
-    # zero forgetting by construction: the old episode's weights never move
+    # parameter isolation holds: the old episode's weights never move. That is a
+    # weaker property than zero forgetting -- see the drift test at the bottom.
     for param, original in zip(old.parameters(), before):
         assert torch.equal(param, original)
 
@@ -373,8 +374,8 @@ def test_partial_load_does_not_destroy_the_adapter_stack():
     # The freeze_extend chain loads a checkpoint with strict=False, because the
     # stack grows by one adapter per episode and no checkpoint ever has exactly
     # the model's keys. Treating "no adapter keys" as "zero adapters" silently
-    # discarded every accumulated adapter -- and with it the zero-forgetting
-    # guarantee -- reporting no missing keys and no warning.
+    # discarded every accumulated adapter -- and with it the whole method --
+    # reporting no missing keys and no warning.
     model = _WrappedBody()
     model.adapters.add_adapter()
     model.adapters.add_adapter()
@@ -454,3 +455,57 @@ def test_dropout_is_actually_wired_into_the_forward_pass():
 
     adapter.eval()
     assert torch.allclose(adapter(x), adapter(x)), "eval mode must be deterministic"
+
+
+# --- what parameter isolation does NOT buy ----------------------------------
+
+
+def _fit(stack, inputs, target, steps=200, lr=0.1):
+    """Train only the newest adapter, as an episode does."""
+    optimizer = torch.optim.SGD(stack.trainable_parameters(), lr=lr)
+    for _ in range(steps):
+        optimizer.zero_grad()
+        nn.functional.mse_loss(stack(inputs), target).backward()
+        optimizer.step()
+
+
+def test_later_episodes_still_move_the_function_on_earlier_ones():
+    # The claim "freeze_extend gives zero forgetting by construction" was FALSE and
+    # is now removed from the docstrings. `forward` chains every adapter onto every
+    # input, so training episode t's adapter changes the model's predictions on
+    # episodes 1..t-1 even though none of their parameters move -- and there is no
+    # task identity in a domain-incremental stream to route old inputs around the
+    # new adapters. Pin the real behaviour so nobody re-derives the wrong claim
+    # from the (correct) freeze invariant next door.
+    torch.manual_seed(0)
+    backbone = nn.Linear(CHANNELS, CHANNELS)
+    freeze_module(backbone, freeze=True)
+    stack = AdapterStack(CHANNELS, rank=RANK)
+
+    episodes = [backbone(torch.randn(16, CHANNELS)) for _ in range(3)]
+    targets = [torch.randn(16, CHANNELS) for _ in range(3)]
+
+    stack.add_adapter()
+    _fit(stack, episodes[0], targets[0])
+    trained_on_episode_1 = stack(episodes[0]).detach().clone()
+    episode_1_weights = [p.detach().clone() for p in stack.adapters[0].parameters()]
+    episode_1_loss = nn.functional.mse_loss(trained_on_episode_1, targets[0]).item()
+
+    for index in (1, 2):
+        stack.add_adapter()
+        _fit(stack, episodes[index], targets[index])
+
+    after = stack(episodes[0]).detach()
+
+    # Parameter isolation itself is intact: episode 1's tensors are bit-identical.
+    for param, original in zip(stack.adapters[0].parameters(), episode_1_weights):
+        assert torch.equal(param, original)
+
+    # ... and yet the function it computes has moved a long way. Measured 0.857 at
+    # this seed; the real model drifts by 1.51x on episode-1 data after episode 3.
+    drift = (after - trained_on_episode_1).norm() / trained_on_episode_1.norm()
+    assert drift > 0.5, f"expected substantial drift, got {drift.item():.3f}"
+
+    # The drift is forgetting, not harmless motion: episode 1 is fitted worse than
+    # when it was the current episode.
+    assert nn.functional.mse_loss(after, targets[0]).item() > episode_1_loss

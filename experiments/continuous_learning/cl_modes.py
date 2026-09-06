@@ -20,13 +20,15 @@ The four CL families:
 * ``er`` -- Experience Replay over a *bounded* reservoir buffer at a controlled
   new:old ratio.
 * ``der_pp`` -- DER++: replay plus distillation against the logits recorded when
-  each exemplar was stored.
+  each exemplar was stored. Single-draw variant -- see :func:`make_der_penalty`.
 * ``ewc`` -- online Elastic Weight Consolidation. Stores no data at all, which is
   what makes it viable where a retention policy forbids keeping raw rows.
 * ``lwf`` -- Learning without Forgetting: distil from the previous episode's model
   on current data. No buffer.
 * ``freeze_extend`` -- freeze everything learned so far and add a small adapter per
-  episode. Zero forgetting by construction.
+  episode. Previously learned parameters are never overwritten, but the stack applies
+  every adapter to every input, so forgetting is bounded by adapter capacity rather
+  than zero. See :mod:`redelex.continual.adapters` for the measured drift.
 
 ``ft_full`` and ``ft_newonly`` are accepted as aliases of ``joint`` and ``naive``:
 those two regimes were never ad-hoc, they were the standard bounds under
@@ -301,11 +303,32 @@ def make_lwf_penalty(
 
 
 def make_der_penalty(entity_table: str, alpha: float = 0.5) -> Callable:
-    """Distil against logits recorded when each exemplar was stored.
+    r"""Distil against logits recorded when each exemplar was stored.
 
     Only fires on replayed batches: batches drawn from the new increment carry no
     stored logit, so the term is skipped rather than being computed against a
     placeholder.
+
+    **This is a single-draw variant of DER++, and the paper must describe it as
+    one.** Buzzega et al. (2020) draw two independent buffer batches per step,
+
+    .. math::
+        L = L_{task}(x) + \alpha \lVert h(x') - z' \rVert^2
+                        + \beta L_{task}(x'', y'')
+
+    Here the mixed loader emits one buffer batch at a time and
+    :class:`~redelex.nn.train.LightningEntityTaskWrapper` applies the task loss to
+    every batch it is handed, so the *same* ``x'`` carries both replay terms and the
+    replay task loss enters at weight 1: ``x' == x''`` and ``beta == 1``, with no
+    ``--der_beta`` to vary it. The new-data term also lands in its own optimiser
+    step rather than being summed with the replay terms, since the loader alternates
+    whole batches. Coupling the draws is defensible -- it halves the
+    neighbour-sampling cost per step, which dominates runtime on these graphs -- but
+    it is not the published objective, and ``alpha`` is the only knob exposed.
+
+    Args:
+        entity_table: Node type the per-example stored logits are attached to.
+        alpha: Weight of the distillation term.
     """
 
     def penalty(pl_module, batch, pred, target):

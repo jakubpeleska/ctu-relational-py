@@ -2,10 +2,22 @@ r"""Parameter isolation: freeze what was learned, extend with a small adapter.
 
 The regimes in this benchmark all keep training the *same* weights, so every
 episode overwrites what the previous one learned. Parameter isolation removes
-that failure mode by construction: the parameters of past episodes are frozen
-and never touched again, and each new episode gets a small trainable module of
-its own. Forgetting is then exactly zero -- the only thing at stake is whether
-the added capacity is enough to fit the new episode.
+that failure mode at the level of the *parameters*: the parameters of past
+episodes are frozen and never touched again, and each new episode gets a small
+trainable module of its own.
+
+That is weaker than zero forgetting, and the paper must not claim otherwise.
+:meth:`AdapterStack.forward` chains EVERY adapter onto EVERY input, and this is a
+domain-incremental setting with no task identity at test time to route an old
+input around the adapters added after it. Training episode *t*'s adapter
+therefore changes the function on episodes ``1..t-1`` even though not one of
+their parameters moves. Measured on the real model: predictions on episode-1
+data moved by **151% of their own magnitude** once episode 3's adapter had been
+trained, with the backbone bit-identical; the toy reproduction in
+``tests/test_continual_adapters.py`` shows the same effect at ~86%. The claim
+that survives is that previously learned parameters are never overwritten, so
+forgetting is bounded by how much the added adapter capacity can bend the shared
+function -- not that it is zero.
 
 The added module is a **bottleneck adapter** (Houlsby et al., 2019): project
 ``channels`` down to ``rank``, apply a nonlinearity, project back, and add the
@@ -108,6 +120,12 @@ class AdapterStack(nn.Module):
     at that moment, the model that enters an episode is bit-for-bit the model
     that left the previous one.
 
+    That equality holds only at insertion. :meth:`forward` applies the whole
+    chain to every input, so as soon as the new adapter takes a gradient step the
+    stack's output on earlier episodes' inputs moves too -- the frozen tensors are
+    protected, the function they participate in is not. See the module docstring
+    for the measured size of that drift.
+
     Args:
         channels: Width of the representation being adapted.
         rank: Default bottleneck width for adapters added later.
@@ -181,6 +199,11 @@ class AdapterStack(nn.Module):
         return self.adapters[-1].parameters()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Every adapter sees every input. Routing an input through only its own
+        # episode's adapter would need task identity at test time, which a
+        # domain-incremental stream does not provide -- so this chain, and the
+        # cross-episode drift it causes, is inherent to the method here rather
+        # than an implementation shortcut.
         for adapter in self.adapters:
             x = adapter(x)
         return x
@@ -213,9 +236,10 @@ class AdapterStack(nn.Module):
         # A state dict with NO adapter keys is ambiguous: under strict=True it means
         # "this checkpoint had zero adapters", but under strict=False it means "not
         # provided". Resizing to zero on the second reading silently destroys an
-        # already-restored stack -- and with it the zero-forgetting guarantee -- with
-        # no missing keys and no warning. Only ever resize when the incoming dict
-        # actually describes adapters; strict mode still reports the mismatch itself.
+        # already-restored stack -- and with it every episode's accumulated capacity,
+        # which is the whole method -- with no missing keys and no warning. Only ever
+        # resize when the incoming dict actually describes adapters; strict mode still
+        # reports the mismatch itself.
         has_adapter_keys = any(
             key.startswith(f"{prefix}adapters.") for key in state_dict
         )

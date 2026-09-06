@@ -17,6 +17,7 @@ from scripts.build_evaluation_matrix import (
     checkpoint_column_candidates,
     checkpoint_columns_by_increment,
     episode_boundaries_from_splits,
+    final_model_decay_avg,
     metric_for_task_type,
     negative_mae,
     roc_auc,
@@ -44,6 +45,14 @@ CLEAN_REGRESSION_R = [
 # window, so a raw split list needs one extra entry in front of BOUNDARIES.
 RAW_SPLITS = [BOUNDARIES[0] - pd.Timedelta(days=10)] + BOUNDARIES
 
+# Four episodes, for the increment-gap tests. Three is too few: {1, 2, 4} needs a
+# fourth episode to be an *interior* gap rather than an out-of-range increment.
+BOUNDARIES_4 = [
+    pd.Timestamp("2020-01-01") + pd.Timedelta(days=d) for d in (0, 10, 20, 30, 40)
+]
+ROW_DAYS_4 = [1, 2, 11, 12, 21, 22, 31, 32]
+RAW_SPLITS_4 = [BOUNDARIES_4[0] - pd.Timedelta(days=10)] + BOUNDARIES_4
+
 
 def _regression_table(constant_predictions):
     """Three two-row episodes with targets 10, 20, 30 and constant-prediction models.
@@ -55,6 +64,21 @@ def _regression_table(constant_predictions):
         {
             "time": [pd.Timestamp("2020-01-01") + pd.Timedelta(days=d) for d in ROW_DAYS],
             "y": [10.0, 10.0, 20.0, 20.0, 30.0, 30.0],
+        }
+    )
+    for name, value in constant_predictions.items():
+        df[name] = float(value)
+    return df
+
+
+def _regression_table_4(constant_predictions):
+    """`_regression_table` with a fourth episode, targets 10/20/30/40."""
+    df = pd.DataFrame(
+        {
+            "time": [
+                pd.Timestamp("2020-01-01") + pd.Timedelta(days=d) for d in ROW_DAYS_4
+            ],
+            "y": [10.0, 10.0, 20.0, 20.0, 30.0, 30.0, 40.0, 40.0],
         }
     )
     for name, value in constant_predictions.items():
@@ -168,14 +192,16 @@ def test_apply_checkpoint_aggregation_first_leaves_the_frame_alone():
     assert frame is df
 
 
-def test_apply_checkpoint_aggregation_is_idempotent_over_its_own_output():
-    # "1_mean" parses as increment 1 / run "mean"; without the guard, a second
-    # pass would average the seeds together with their own average
-    df = pd.DataFrame({"1_aaa": [0.0], "1_bbb": [4.0]})
+def test_apply_checkpoint_aggregation_does_not_treat_its_own_mean_as_a_seed():
+    # "1_mean" parses as increment 1 / run "mean". Re-running with aggregate="mean"
+    # cannot show the guard working -- averaging a mean back into its own inputs is
+    # arithmetically a no-op, so that assertion could never fail. The observable
+    # case is "first", where "1_mean" sorts ahead of a run id like "zzz" and would
+    # be handed back as though it were one of the seeds.
+    df = pd.DataFrame({"1_zzz": [0.0], "1_yyy": [4.0]})
     once, _ = apply_checkpoint_aggregation(df, aggregate="mean")
-    twice, columns = apply_checkpoint_aggregation(once, aggregate="mean")
-    assert columns == ["1_mean"]
-    np.testing.assert_allclose(twice["1_mean"], [2.0])
+    _, columns = apply_checkpoint_aggregation(once, aggregate="first")
+    assert columns == ["1_yyy"]
 
 
 def test_apply_checkpoint_aggregation_rejects_a_table_without_predictions():
@@ -471,12 +497,14 @@ def test_summarise_returns_finite_values_on_a_well_formed_matrix():
         "average_accuracy",
         "backward_transfer",
         "forward_transfer",
-        "drift_curve_avg",
+        "first_model_episode_decay_avg",
     ):
         assert np.isfinite(summary[key]), key
     assert np.all(np.isfinite(summary["per_episode_forgetting"]))
     assert np.all(np.isfinite(summary["drift_curve"]))
-    assert np.all(np.isfinite(summary["forward_transfer_baseline"]))
+    # episodes 0 and 1 have no within-matrix baseline; the rest must be real
+    assert np.all(np.isnan(summary["forward_transfer_baseline"][:2]))
+    assert np.all(np.isfinite(summary["forward_transfer_baseline"][2:]))
 
 
 def test_summarise_reports_forgetting_as_negative_backward_transfer():
@@ -488,8 +516,10 @@ def test_summarise_reports_forgetting_as_negative_backward_transfer():
 
 
 def test_summarise_average_accuracy_is_the_final_rows_mean():
-    matrix = np.array([[0.9, 0.5], [0.6, 0.8]])
-    assert summarise(matrix)["average_accuracy"] == pytest.approx(0.7)
+    # the first row's mean (0.7) and the whole matrix's mean (0.55) both differ
+    # from the last row's (0.4), so a mutation to either would be caught
+    matrix = np.array([[0.9, 0.5], [0.6, 0.2]])
+    assert summarise(matrix)["average_accuracy"] == pytest.approx(0.4)
 
 
 def test_summarise_accepts_an_explicit_forward_transfer_baseline():
@@ -500,28 +530,76 @@ def test_summarise_accepts_an_explicit_forward_transfer_baseline():
     assert summary["forward_transfer_baseline"] == pytest.approx([0.0, 0.4])
 
 
-def test_diagonal_free_baseline_never_reads_the_diagonal():
+def test_diagonal_free_baseline_excludes_the_row_forward_transfer_scores():
+    # R[j-1, j] is the cell forward_transfer subtracts the baseline from, so it
+    # must stay out of that baseline; R[2, 3] is made wild to prove it is not
+    # averaged in
+    matrix = np.array(
+        [
+            [0.1, 0.2, 0.3, 0.4],
+            [0.2, 0.3, 0.4, 0.6],
+            [0.3, 0.4, 0.5, 9.0],
+            [0.4, 0.5, 0.6, 0.7],
+        ]
+    )
+    baseline = _diagonal_free_baseline(matrix)
+    assert baseline.shape == (4,)
+    assert baseline[2] == pytest.approx(0.3)  # R[0, 2] alone, not with R[1, 2]
+    assert baseline[3] == pytest.approx((0.4 + 0.6) / 2)  # rows 0 and 1, not row 2
+
+
+def test_diagonal_free_baseline_is_undefined_below_episode_two():
     matrix = np.array([[0.9, 0.5, 0.4], [0.6, 0.8, 0.2], [0.1, 0.2, 0.7]])
     baseline = _diagonal_free_baseline(matrix)
-    # column j averaged over the rows above the diagonal: models that had not
-    # yet been trained through episode j
-    assert baseline[1] == pytest.approx(0.5)
-    assert baseline[2] == pytest.approx((0.4 + 0.2) / 2)
-    # index 0 has no rows above the diagonal to average, so it is filled with the
-    # episode's own diagonal; forward_transfer never reads it
-    assert baseline[0] == pytest.approx(0.9)
-    assert baseline.shape == (3,)
+    # episode 1's only earlier model is the one forward transfer scores, so the
+    # proxy has nothing to average; episode 0 has no earlier model at all
+    assert np.isnan(baseline[0])
+    assert np.isnan(baseline[1])
+    assert np.isfinite(baseline[2])
 
 
-def test_summarise_forward_transfer_is_zero_when_history_adds_nothing():
-    # with a single prior model, R[0, 1] is also the whole baseline for episode 1
+def test_diagonal_free_baseline_is_all_nan_below_three_episodes():
+    assert np.all(np.isnan(_diagonal_free_baseline(np.array([[0.9, 0.5], [0.6, 0.8]]))))
+
+
+def test_summarise_forward_transfer_is_nan_for_a_two_episode_matrix():
+    # rel-f1/driver-top3 is a two-episode task: the within-matrix proxy is
+    # undefined there, and reporting 0.0 would read as "no transfer" instead
     matrix = np.array([[0.9, 0.5], [0.6, 0.8]])
-    assert summarise(matrix)["forward_transfer"] == pytest.approx(0.0)
+    assert np.isnan(summarise(matrix)["forward_transfer"])
 
 
-def test_summarise_drift_curve_avg_weights_the_earliest_episode_most():
+def test_summarise_forward_transfer_compares_the_latest_model_to_the_older_ones():
+    # the only defined comparison in a 3x3 is episode 2: R[1, 2] against R[0, 2]
+    matrix = np.array([[0.1, 0.2, 0.3], [0.4, 0.5, 0.9], [0.7, 0.8, 0.9]])
+    assert summarise(matrix)["forward_transfer"] == pytest.approx(0.6)
+
+
+def test_summarise_keeps_every_episode_when_the_baseline_is_explicit():
+    # an explicit baseline is a real independently-initialised model, so episode 1
+    # is a genuine comparison and must not be dropped from the average
+    matrix = np.array([[0.1, 0.6, 0.3], [0.4, 0.5, 0.8], [0.7, 0.8, 0.9]])
+    summary = summarise(matrix, baseline=[0.0, 0.1, 0.2])
+    # mean(R[0, 1] - 0.1, R[1, 2] - 0.2) = mean(0.5, 0.6); dropping episode 1
+    # would leave 0.6 alone
+    assert summary["forward_transfer"] == pytest.approx(0.55)
+
+
+def test_summarise_first_model_episode_decay_avg_weights_the_earliest_episode_most():
     matrix = np.array([[1.0, 0.0], [0.5, 0.5]])
-    assert summarise(matrix, decay=0.5)["drift_curve_avg"] == pytest.approx(1.0 / 1.5)
+    summary = summarise(matrix, decay=0.5)
+    assert summary["first_model_episode_decay_avg"] == pytest.approx(1.0 / 1.5)
+    # the old name promised the published decay metric and delivered this one
+    assert "drift_curve_avg" not in summary
+
+
+def test_summarise_final_model_decay_avg_is_passed_through_not_derived():
+    # it cannot be derived: it needs the per-row predictions, which R has lost
+    matrix = np.array([[1.0, 0.0], [0.5, 0.5]])
+    assert summarise(matrix, final_model_decay=0.25)[
+        "final_model_decay_avg"
+    ] == pytest.approx(0.25)
+    assert np.isnan(summarise(matrix)["final_model_decay_avg"])
 
 
 def test_summarise_rejects_a_non_square_matrix():
@@ -532,12 +610,19 @@ def test_summarise_rejects_a_non_square_matrix():
 # --- main --------------------------------------------------------------------
 
 
-def _fake_task_context(table_cols):
+def _fake_task_context(table_cols, raw_splits=None, recorder=None):
     """Stand-in for `_load_task_context`, so `main` runs without relbench or a cache."""
     task = SimpleNamespace(
         target_col="y", time_col="time", task_type=TaskType.REGRESSION
     )
-    return lambda dataset, task_name: (task, RAW_SPLITS, list(table_cols))
+    splits = RAW_SPLITS if raw_splits is None else raw_splits
+
+    def _context(dataset, task_name, val_delta_days=None):
+        if recorder is not None:
+            recorder["val_delta_days"] = val_delta_days
+        return task, splits, list(table_cols)
+
+    return _context
 
 
 def _write_predictions(tmp_path, df):
@@ -611,3 +696,277 @@ def test_main_truncates_to_the_episodes_the_finished_checkpoints_cover(
     assert "truncating" in capsys.readouterr().err
     written = pd.read_csv(f"{out}_matrix.csv", index_col=0)
     np.testing.assert_allclose(written.to_numpy(), [[0.0, -10.0], [-10.0, 0.0]])
+
+
+# --- the published decay metric ----------------------------------------------
+
+_W0 = pd.Timestamp("2020-02-01")
+_W1 = pd.Timestamp("2020-02-08")
+
+
+def test_final_model_decay_avg_weights_windows_by_their_row_count():
+    # one row at the first timestamp, three at the second: the count-weighted mean
+    # is -3.0 where an unweighted mean over the two windows would be -2.0
+    times = [_W0, _W1, _W1, _W1]
+    y_true = [10.0, 20.0, 20.0, 20.0]
+    y_pred = [10.0, 16.0, 16.0, 16.0]
+    value = final_model_decay_avg(times, y_true, y_pred, negative_mae, start=_W0)
+    assert value == pytest.approx(-3.0)
+
+
+def test_final_model_decay_avg_scores_each_timestamp_as_its_own_window():
+    # decay is applied per window, so the two timestamps cannot have been pooled:
+    # weights 1 and 0.5 over scores 0.0 and -4.0
+    times = [_W0, _W1]
+    value = final_model_decay_avg(
+        times, [10.0, 20.0], [10.0, 16.0], negative_mae, start=_W0, decay=0.5
+    )
+    assert value == pytest.approx(-4.0 * 0.5 / 1.5)
+
+
+def test_final_model_decay_avg_ignores_rows_before_start():
+    # the first window is where the model is worst; starting after it must not
+    # merely down-weight it but drop it
+    times = [_W0, _W1]
+    value = final_model_decay_avg(
+        times, [10.0, 20.0], [99.0, 16.0], negative_mae, start=_W1
+    )
+    assert value == pytest.approx(-4.0)
+
+
+def test_final_model_decay_avg_end_is_exclusive():
+    times = [_W0, _W1]
+    value = final_model_decay_avg(
+        times, [10.0, 20.0], [12.0, 99.0], negative_mae, start=_W0, end=_W1
+    )
+    assert value == pytest.approx(-2.0)
+
+
+def test_final_model_decay_avg_drops_a_window_whose_metric_is_undefined():
+    # a single-timestamp window very often holds one class, where ROC-AUC has no
+    # value; propagating that nan would erase the metric for every binary task
+    times = [_W0] * 4 + [_W1] * 2
+    y_true = [0.0, 0.0, 1.0, 1.0, 1.0, 1.0]
+    y_pred = [0.1, 0.2, 0.8, 0.9, 0.3, 0.4]
+    value = final_model_decay_avg(times, y_true, y_pred, roc_auc, start=_W0)
+    assert value == pytest.approx(1.0)
+
+
+def test_final_model_decay_avg_is_nan_when_no_window_is_scorable():
+    times = [_W0, _W1]
+    assert np.isnan(
+        final_model_decay_avg(times, [1.0, 1.0], [0.3, 0.4], roc_auc, start=_W0)
+    )
+
+
+def test_final_model_decay_avg_rejects_an_empty_span():
+    with pytest.raises(ValueError, match="no rows"):
+        final_model_decay_avg(
+            [_W0], [10.0], [10.0], negative_mae, start=_W1
+        )
+
+
+def test_final_model_decay_avg_rejects_ragged_inputs():
+    with pytest.raises(ValueError, match="length mismatch"):
+        final_model_decay_avg([_W0, _W1], [10.0], [10.0, 10.0], negative_mae, start=_W0)
+
+
+def test_final_model_decay_avg_is_not_the_first_model_episode_average():
+    # the two used to share the name `drift_curve_avg`. Here the first increment
+    # drifts badly across the episode grid while the final one is exact on its own
+    # window, so the two numbers cannot be confused
+    df = _regression_table({"1_run1": 10.0, "2_run2": 20.0, "3_run3": 30.0})
+    matrix, _ = build_matrix(df, BOUNDARIES, "y", "time", TaskType.REGRESSION)
+    first_model = summarise(matrix)["first_model_episode_decay_avg"]
+    final_model = final_model_decay_avg(
+        df["time"], df["y"], df["3_run3"], negative_mae, start=BOUNDARIES[-2]
+    )
+    assert first_model == pytest.approx(-10.0)
+    assert final_model == pytest.approx(0.0)
+
+
+# --- what happens to the RelBench test split ---------------------------------
+
+
+def test_test_split_rows_are_outside_r_but_inside_the_decay_metric():
+    # `episode_boundaries_from_splits` stops AT test_timestamp, so nothing on or
+    # after it forms a column of R -- there is no checkpoint trained through the
+    # validation window to fill such a column's diagonal. Those rows are not
+    # thrown away: `final_model_decay_avg` runs from the final episode's start
+    # with no upper bound, which is where they are scored.
+    boundaries = episode_boundaries_from_splits(RAW_SPLITS)
+    assert boundaries[-1] == RAW_SPLITS[-1]
+
+    test_timestamp = RAW_SPLITS[-1]
+    times = [test_timestamp, test_timestamp + pd.Timedelta(days=1)]
+    np.testing.assert_array_equal(assign_episodes(times, boundaries), [-1, -1])
+
+    value = final_model_decay_avg(
+        times, [1.0, 3.0], [1.0, 1.0], negative_mae, start=boundaries[-2]
+    )
+    assert value == pytest.approx(-1.0)
+
+
+# --- episode width -----------------------------------------------------------
+
+
+def test_load_task_context_passes_the_episode_width_to_get_splits(monkeypatch):
+    # a --val_delta_days sweep cuts the timeline into different windows; taking
+    # get_splits' default here would build R's columns from one partition and its
+    # rows from another, and only the counts are checked downstream
+    import relbench.tasks
+
+    from experiments.continuous_learning import continuous_task
+
+    recorded = {}
+
+    class _RecordingWrapper:
+        def __init__(self, task):
+            self.full_table = SimpleNamespace(df=pd.DataFrame(columns=["time", "y"]))
+
+        def get_splits(self, val_delta=None, **kwargs):
+            recorded["val_delta"] = val_delta
+            return list(RAW_SPLITS)
+
+    monkeypatch.setattr(relbench.tasks, "get_task", lambda dataset, task_name: object())
+    monkeypatch.setattr(continuous_task, "ContinuousWrapper", _RecordingWrapper)
+
+    _, splits, table_cols = bem._load_task_context(
+        "rel-f1", "driver-position", val_delta_days=7
+    )
+    assert recorded["val_delta"] == pd.Timedelta(days=7)
+    assert splits == list(RAW_SPLITS)
+    assert table_cols == ["time", "y"]
+
+
+def test_load_task_context_keeps_the_wrappers_default_width_when_unset(monkeypatch):
+    import relbench.tasks
+
+    from experiments.continuous_learning import continuous_task
+
+    recorded = {}
+
+    class _RecordingWrapper:
+        def __init__(self, task):
+            self.full_table = SimpleNamespace(df=pd.DataFrame(columns=["time", "y"]))
+
+        def get_splits(self, val_delta=None, **kwargs):
+            recorded["val_delta"] = val_delta
+            return list(RAW_SPLITS)
+
+    monkeypatch.setattr(relbench.tasks, "get_task", lambda dataset, task_name: object())
+    monkeypatch.setattr(continuous_task, "ContinuousWrapper", _RecordingWrapper)
+
+    bem._load_task_context("rel-f1", "driver-position")
+    assert recorded["val_delta"] is None
+
+
+def test_main_forwards_val_delta_days_to_the_split_builder(tmp_path, monkeypatch):
+    df = _regression_table({"1_run1": 10.0, "2_run2": 20.0, "3_run3": 30.0})
+    csv_path = _write_predictions(tmp_path, df)
+    recorded = {}
+    monkeypatch.setattr(
+        bem, "_load_task_context", _fake_task_context(["time", "y"], recorder=recorded)
+    )
+
+    exit_code = bem.main(
+        [
+            "--predictions",
+            str(csv_path),
+            "--dataset",
+            "rel-f1",
+            "--task",
+            "driver-position",
+            "--val-delta-days",
+            "7",
+        ]
+    )
+
+    assert exit_code == 0
+    assert recorded["val_delta_days"] == pytest.approx(7.0)
+
+
+# --- increment gaps ----------------------------------------------------------
+
+
+def _run_main_on(tmp_path, monkeypatch, df, table_cols, raw_splits, extra_args=()):
+    csv_path = _write_predictions(tmp_path, df)
+    monkeypatch.setattr(
+        bem, "_load_task_context", _fake_task_context(table_cols, raw_splits=raw_splits)
+    )
+    return bem.main(
+        [
+            "--predictions",
+            str(csv_path),
+            "--dataset",
+            "rel-f1",
+            "--task",
+            "driver-position",
+            *extra_args,
+        ]
+    )
+
+
+def test_main_refuses_an_interior_increment_gap(tmp_path, monkeypatch):
+    # increments {1, 2, 4} over four episodes. Truncating to the first three
+    # boundaries would score increment 4 against episode 2 and report numbers that
+    # look plausible: the old code exited 0 here.
+    df = _regression_table_4({"1_run1": 10.0, "2_run2": 20.0, "4_run4": 40.0})
+    with pytest.raises(SystemExit) as excinfo:
+        _run_main_on(tmp_path, monkeypatch, df, ["time", "y"], RAW_SPLITS_4)
+    assert "[3]" in str(excinfo.value)
+
+
+def test_main_refuses_a_head_increment_gap(tmp_path, monkeypatch):
+    # the likely shape in practice: run_predictions.py queries MLflow with no
+    # order_by, MLflow defaults to start_time DESC, so an interrupted predict job
+    # leaves the NEWEST increments behind. Truncating would produce a "drift curve"
+    # that improves over time, from models that never saw the early episodes.
+    df = _regression_table_4({"3_run3": 30.0, "4_run4": 40.0})
+    with pytest.raises(SystemExit) as excinfo:
+        _run_main_on(tmp_path, monkeypatch, df, ["time", "y"], RAW_SPLITS_4)
+    assert "[1, 2]" in str(excinfo.value)
+
+
+def test_main_still_truncates_a_genuine_tail_gap(tmp_path, monkeypatch, capsys):
+    # the case the truncation was written for, over four episodes: a prefix of
+    # increments really does line up with the leading episodes
+    df = _regression_table_4({"1_run1": 10.0, "2_run2": 20.0})
+    exit_code = _run_main_on(tmp_path, monkeypatch, df, ["time", "y"], RAW_SPLITS_4)
+    assert exit_code == 0
+    assert "truncating" in capsys.readouterr().err
+
+
+def test_main_refuses_a_table_with_no_prediction_columns(tmp_path, monkeypatch):
+    df = _regression_table({})
+    with pytest.raises(SystemExit) as excinfo:
+        _run_main_on(tmp_path, monkeypatch, df, ["time", "y"], RAW_SPLITS)
+    assert "prediction columns" in str(excinfo.value)
+
+
+def test_main_summary_carries_both_decay_averages(tmp_path, monkeypatch):
+    df = _regression_table({"1_run1": 10.0, "2_run2": 20.0, "3_run3": 30.0})
+    csv_path = _write_predictions(tmp_path, df)
+    monkeypatch.setattr(bem, "_load_task_context", _fake_task_context(["time", "y"]))
+
+    out = tmp_path / "run"
+    exit_code = bem.main(
+        [
+            "--predictions",
+            str(csv_path),
+            "--dataset",
+            "rel-f1",
+            "--task",
+            "driver-position",
+            "--out",
+            str(out),
+        ]
+    )
+
+    assert exit_code == 0
+    summary = json.loads(Path(f"{out}_summary.json").read_text())
+    assert "drift_curve_avg" not in summary
+    # the frozen first increment averaged over the episode grid, against the final
+    # increment scored per timestamp from its own window on -- not the same number
+    assert summary["first_model_episode_decay_avg"] == pytest.approx(-10.0)
+    assert summary["final_model_decay_avg"] == pytest.approx(0.0)

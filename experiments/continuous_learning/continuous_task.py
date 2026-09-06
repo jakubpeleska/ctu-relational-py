@@ -65,7 +65,16 @@ class ContinuousWrapper:
         Returns:
             Increasing list of boundaries. ``splits[0]`` is the first data
             timestamp, ``splits[-2]`` is ``val_timestamp`` and ``splits[-1]`` is
-            ``test_timestamp``; episode ``i`` covers ``[splits[i], splits[i+1])``.
+            ``test_timestamp``.
+
+            Episodes are indexed the way ``continuous_learning.py`` indexes them --
+            ``for i in range(1, len(splits) - 1)``, and ``i`` is what MLflow logs as
+            ``increment`` -- so episode ``i`` **ends** at ``splits[i]``: it trains on
+            ``[splits[i-1], splits[i])`` for the increment-window modes, on
+            everything before ``splits[i]`` for the full-window ones, and validates
+            on ``[splits[i], splits[i+1])``. There is no episode 0, and the last
+            episode is ``len(splits) - 2``, whose validation window is exactly the
+            native ``[val_timestamp, test_timestamp)``.
         """
         if val_delta is None:
             val_delta = (

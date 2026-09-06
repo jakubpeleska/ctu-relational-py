@@ -28,7 +28,8 @@ Do not re-litigate anything here without new evidence.
   that WOULD have given 50/50 — but `continuous_learning.py:242` calls `rnd_uni`. Intent existed,
   never wired up. See `analysis/upsampling-ratio-finding.md`.
 
-- **GPUs are healthy** (2026-09-02): 4x A100-SXM4-40GB, torch 2.9.1+cu128,
+- **GPUs are healthy** (2026-09-02) **[NO LONGER TRUE as of 2026-09-06 - see below]**:
+  4x A100-SXM4-40GB, torch 2.9.1+cu128,
   `torch.cuda.is_available() == True`, `device_count() == 4`. The prior session's NVML failure has
   cleared. Earlier smoke run's "0 GPUs" was just `--num_gpus` defaulting to 0, not a broken build.
 
@@ -83,6 +84,8 @@ Do not re-litigate anything here without new evidence.
   paper's tables from `full_table` predictions. The subsample drives model selection and LR only.
   **Cost:** validation was 15.1x training on rel-stack (30,100 vs 2,000 batches), 13.2x on
   rel-amazon, 8.2x on rel-hm. Capping cuts validation work ~7.7x on rel-stack.
+  **[SUPERSEDED 2026-09-06: 15.1x is the *median episode*, not the chain. Per chain the honest
+  figure is 5.9x - `analysis/evaluation-cost-finding.md`. Do not quote 15.1x in the paper.]**
 
 - **All three are CLI flags** (`--val_check_interval`, `--val_max_rows`, `--max_training_steps`);
   passing 0 restores the old behaviour so it stays reachable as a control.
@@ -103,6 +106,8 @@ Do not re-litigate anything here without new evidence.
   precedent, and that was for the non-continual setting.
 - **`head_norm` was dead config** - in param_space and logged to MLflow, never passed to the model.
   Now passed. Same value, so no results change.
+  **[CORRECTED 2026-09-06: passing it changed nothing - it is still inert. See "Corrections to
+  earlier verified lines" below. Do not read this bullet as "fixed".]**
 - **`out_channels` was never passed** either; always 1. Correct for every task in the grid (all
   binary/regression) but would have silently broken multiclass. Now derived from task type.
 - **Learning rate is now logged** (`LearningRateMonitor`). It was logged in NO published run, which
@@ -111,6 +116,9 @@ Do not re-litigate anything here without new evidence.
   feeding a 2-layer GNN, never chosen. Relevant to CMu9's encoder-vs-GNN attribution.
 
 ## Method roster (2026-09-03) - 7 modes
+
+**[STALE 2026-09-06: the shipped roster is 8 modes under different names, and it INCLUDES parameter
+isolation. Take the roster from `cl_modes.DEFAULT_ROSTER`, not from this section - details below.]**
 
 `from_scratch`, `ft_full`, `ft_newonly`, `er_reservoir`, `der_pp`, `ewc`, `lwf`.
 
@@ -126,3 +134,73 @@ Do not re-litigate anything here without new evidence.
   disjoint capacity per task, but this is domain-incremental (one task, drifting distribution).
   PackNet also leaves 0.02% of the network free by episode 12, the median chain length here.
   Write it up as a finding, not a gap.
+
+## Corrections to earlier "verified" lines (2026-09-06)
+
+Every entry below was re-checked by running the code, not by re-reading the note. The original
+lines are left in place with a pointer rather than rewritten: a decisions file that quietly edits
+its own history stops being evidence. What is corrected here is what a later session would
+otherwise be told to trust.
+
+- **`head_norm` is STILL INERT. The Hyperparameters bullet "Now passed" reads as fixed and is not.**
+  The head is `MLP(in_channels=gnn_channels, out_channels=out_channels, norm=head_norm,
+  num_layers=1)` (`experiments/continuous_learning/models.py:78-83`), and PyG's `MLP` places a norm
+  after each *hidden* layer only. A 1-layer MLP has no hidden layer, so the argument is discarded
+  whatever its value. Verified: `MLP(in_channels=128, out_channels=1, norm='batch_norm',
+  num_layers=1)` gives `norms == []` and state keys `['lins.0.bias', 'lins.0.weight']`, identical to
+  `norm=None` and to `norm='layer_norm'`, and the outputs are bit-equal for a fixed seed.
+  So the parameter went from dead config to *live config wired to a no-op*: it is threaded to the
+  model (`continuous_learning.py:476`) and logged to MLflow as a hyperparameter that cannot affect
+  anything. "Same value, so no results change" was true, but for the wrong reason - it would still
+  change nothing at a different value.
+  **Not fixed here, because it is a behaviour change, not a doc fix.** The two honest options are
+  to drop `head_norm` from `param_space` and the MLflow params, or to give the head
+  `num_layers >= 2` with an explicit `hidden_channels` and re-earn the port gate.
+
+- **`freeze_extend` does NOT give zero forgetting.** The phrase "zero forgetting by construction"
+  had spread to `redelex/continual/adapters.py` and `cl_modes.py` and is now removed from both.
+  `AdapterStack.forward` chains every adapter onto every input and this is domain-incremental, so
+  there is no task identity to route an old input around later adapters: training episode t's
+  adapter changes the function on episodes 1..t-1 while every one of their parameters stays
+  bit-identical. Measured on the real model: episode-1 predictions moved 151% of their own
+  magnitude after episode 3's adapter, backbone unchanged. Pinned by
+  `tests/test_continual_adapters.py::test_later_episodes_still_move_the_function_on_earlier_ones`
+  (toy reproduction, 0.857 relative drift; verified to fail if inputs are routed per episode).
+  Every *mechanical* property claimed for the stack does hold: identity at insertion, optimiser
+  scoping to the newest adapter, freeze invariant across save/load. The correct claim is
+  "previously learned parameters are never overwritten; forgetting is bounded by adapter capacity
+  rather than zero".
+
+- **The fixed step budget is not the neutral control it was written up as.**
+  `analysis/evaluation-cost-finding.md` used to argue *for* keeping it; that conclusion is
+  withdrawn in place (the measurement it rests on is fine, the inference was not). A constant
+  `max_training_steps x batch_size = 256,000` examples means a mode training on the increment gets
+  up to ~52x more passes over its own training set than a mode training on all history, at rel-hm
+  episode 52. See that file for the per-dataset table.
+
+- **"GPUs are healthy (2026-09-02)" is a dated observation, not a standing fact.** As of 2026-09-06
+  the container's device cgroup denies `/dev/nvidia*` (EPERM on world-writable nodes,
+  `/dev/nvidia0` absent) and `torch.cuda.is_available()` is False. See `notes/PROGRESS.md`.
+
+- **The roster section is stale in three ways.** The code ships 8 modes -
+  `from_scratch, joint, naive, er, der_pp, ewc, lwf, freeze_extend` (`cl_modes.DEFAULT_ROSTER`).
+  (1) `ft_full`/`ft_newonly` are now aliases of `joint`/`naive`, and `er_reservoir` is `er`.
+  (2) "Parameter isolation excluded on principle" is contradicted by `freeze_extend` being in the
+  default roster; it is in, and the finding to write up is the measured drift above rather than the
+  exclusion argument. (3) `ft_upsample` was not dropped - it is retained as a reproduction-only
+  mode (`legacy=True`) and is excluded from the roster rather than from the codebase.
+
+- **DER++ here is a single-draw variant with `beta` implicitly 1.** Buzzega et al. draw `x'` and
+  `x''` independently; the mixed loader emits one buffer batch at a time and the wrapper applies the
+  task loss to every batch, so one batch carries both the alpha-weighted distillation and the replay
+  task loss at weight 1. There is no `--der_beta`. Documented in `cl_modes.make_der_penalty`; the
+  paper's method description must match it.
+
+- **Line numbers in the 2026-09-02 and 2026-09-03 sections have drifted; the claims still hold.**
+  Re-checked: the val window is built at `continuous_learning.py:614` (not `:245`) and is still
+  `[splits[i], splits[i+1])` against a `< end` mask (`continuous_task.py:29-31`), so there is still
+  no test-window leak; `validation_step` is at `entity_wrapper.py:120` (not `:101-113`) and still
+  computes no loss, so metric-based selection still stands. The seed bullet's *mechanism* is stale -
+  seeds are no longer drawn by `tune.randint` inside the episode loop but eagerly at
+  `continuous_learning.py:850-860` - while its conclusion is unchanged and now stronger:
+  `--seed=42` still yields `[102, 435, 860, 270, 106]`, and resuming can no longer shift the draw.

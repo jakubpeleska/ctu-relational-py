@@ -23,6 +23,13 @@ silently invert the sign of every conclusion drawn from it -- forgetting would
 read as transfer and vice versa. Because ``R`` is normalised here, every call
 into ``metrics`` from this module uses ``higher_is_better=True``.
 
+Two decay averages are reported, and they are different objects
+---------------------------------------------------------------
+``first_model_episode_decay_avg`` collapses row 0 of ``R`` -- the frozen first
+increment, per episode. ``final_model_decay_avg`` is the number the published
+plots report: the *final* increment scored per unique task timestamp from
+``val_timestamp`` on, row-count weighted. See :func:`final_model_decay_avg`.
+
 Everything except :func:`main` is a pure function over DataFrames and arrays, so
 the reduction is testable without any fixture on disk.
 
@@ -30,6 +37,9 @@ Usage:
     .venv/bin/python scripts/build_evaluation_matrix.py \
         --predictions data/pelesjak_cl_ft_full/rel-f1_driver-position_predictions.csv \
         --dataset rel-f1 --task driver-position --aggregate mean
+
+    Pass ``--val-delta-days`` whenever the run itself was swept with
+    ``--val_delta_days``: the episode grid must be the run's own grid.
 """
 
 import argparse
@@ -70,6 +80,7 @@ __all__ = [
     "roc_auc",
     "negative_mae",
     "build_matrix",
+    "final_model_decay_avg",
     "summarise",
 ]
 
@@ -279,11 +290,22 @@ def episode_boundaries_from_splits(splits: Sequence) -> List:
     evaluation episode: dropping it lines episode ``j`` up with increment
     ``j + 1``, which is the alignment ``R`` needs.
 
+    The RelBench **test** split is deliberately not an episode
+    ---------------------------------------------------------
+    The returned list ends at ``test_timestamp``, and :func:`assign_episodes`
+    labels every row at or after the last boundary ``-1``, so nothing on or after
+    ``test_timestamp`` reaches ``R``. That is a choice, not an oversight, and the
+    rejected alternative was to append a boundary past ``test_timestamp`` and let
+    the test split be a final column. Those rows are still scored, by
+    :func:`final_model_decay_avg` -- see below.
+
     Args:
         splits: The list returned by ``ContinuousWrapper.get_splits()``.
 
     Returns:
-        Boundaries defining ``len(splits) - 2`` evaluation episodes.
+        Boundaries defining ``len(splits) - 2`` evaluation episodes, ending at
+        ``splits[-1]`` (``test_timestamp``), which closes the final episode
+        rather than opening one.
 
     Raises:
         ValueError: If fewer than three splits are given, which leaves no
@@ -293,6 +315,16 @@ def episode_boundaries_from_splits(splits: Sequence) -> List:
         raise ValueError(
             f"need at least 3 splits to form one evaluation episode, got {len(splits)}"
         )
+    # Why the test split gets no column: every column of `R` needs a checkpoint
+    # trained *through* that episode to fill its diagonal, and the protocol trains
+    # no increment on the validation window -- the last increment is validated on
+    # it. A test column would therefore have no diagonal cell, and
+    # `average_accuracy`, `backward_transfer` and `per_episode_forgetting` all
+    # read the diagonal; `R` would also stop being square, which `build_matrix`
+    # rejects outright. The compute `run_predictions.py` spends on those rows is
+    # not wasted: `final_model_decay_avg` scores the final checkpoint from the
+    # start of its own episode onwards with no upper bound, which is exactly the
+    # notebook's `[val_timestamp, Timestamp.max)` window and covers the test split.
     return list(splits[1:])
 
 
@@ -491,22 +523,132 @@ def _diagonal_free_baseline(matrix: np.ndarray) -> np.ndarray:
     initialised model, which this experiment never trains. The closest thing
     ``R`` contains on its own is column ``j`` above the diagonal: every model
     that had not yet been trained through episode ``j``. Comparing the most
-    recent of those (``R[j-1, j]``, what `forward_transfer` uses) against their
-    mean asks whether accumulating more history helps on an unseen future
-    episode -- a within-matrix proxy, not the published FWT.
+    recent of those (``R[j-1, j]``, what `forward_transfer` uses) against the
+    mean of the *older* ones asks whether accumulating more history helps on an
+    unseen future episode -- a within-matrix proxy, not the published FWT.
+
+    Returns:
+        Length-``n`` vector, ``nan`` at indices 0 and 1 where the proxy has no
+        rows to average, so a matrix of fewer than three episodes yields no
+        baseline at all.
     """
     n = matrix.shape[0]
-    baseline = np.empty(n, dtype=float)
-    # Index 0 is never read by `forward_transfer`; fill it with the episode's own
-    # diagonal so the vector is finite and printable.
-    baseline[0] = matrix[0, 0]
-    for j in range(1, n):
-        baseline[j] = float(np.mean(matrix[:j, j]))
+    baseline = np.full(n, np.nan, dtype=float)
+    # Row j-1 must be left OUT of column j's baseline: it is the very cell
+    # `forward_transfer` subtracts the baseline from, so averaging it into its own
+    # baseline pulls the difference toward zero -- and at j = 1, where row 0 is the
+    # only row above the diagonal, the difference is *identically* zero. A
+    # two-episode task (rel-f1/driver-top3 is one) would then report
+    # `forward_transfer = 0.0000` for every mode, which reads as "no transfer"
+    # rather than "undefined". So the proxy starts at j = 2 and indices 0 and 1
+    # stay nan: undefined, not fabricated.
+    for j in range(2, n):
+        baseline[j] = float(np.mean(matrix[: j - 1, j]))
     return baseline
 
 
+def final_model_decay_avg(
+    times,
+    y_true,
+    y_pred,
+    metric_fn: Callable[[np.ndarray, np.ndarray], float],
+    start,
+    end=None,
+    decay: float = 0.0,
+) -> float:
+    r"""The published decay metric: one model, scored per task timestamp, from ``start`` on.
+
+    This reproduces ``calculate_metric_for_split`` in
+    ``notebooks/process-data-continuous-learning.ipynb``, which is what every
+    published continual-learning number was computed with: take **one**
+    checkpoint -- the final increment's -- score it separately on every *unique
+    task timestamp* in ``[start, end)``, and collapse those per-timestamp scores
+    with :func:`~redelex.continual.metrics.exp_decay_avg`, weighting each by how
+    many rows that timestamp carries.
+
+    It is *not* ``exp_decay_avg(R[0, :])``, which this module reports separately
+    as ``first_model_episode_decay_avg``. The two differ in four ways, and used
+    to share the name ``drift_curve_avg``:
+
+    1. **Which model.** Row 0 of ``R`` is the *first* increment's checkpoint,
+       frozen; the published metric uses the *final* one, the deployed model.
+    2. **Which windows.** Row 0 is scored per *episode*; the published metric is
+       scored per *unique task timestamp*, of which an episode holds many.
+    3. **Which span.** Row 0 covers the whole episode grid; the published metric
+       starts at the final model's own window (``val_timestamp``) and runs to
+       ``Timestamp.max``, so it includes the RelBench test split -- which
+       :func:`episode_boundaries_from_splits` deliberately leaves out of ``R``.
+    4. **Which weights.** Row 0 is collapsed unweighted; the published metric
+       weights each window by its row count, so a timestamp with three rows
+       counts three times as much as one with a single row.
+
+    Args:
+        times: Timestamp (or numeric time) of each row, aligned with ``y_true``.
+        y_true: Ground truth per row.
+        y_pred: One checkpoint's prediction per row.
+        metric_fn: Called as ``metric_fn(y_true, y_pred)`` on one window's rows.
+            Must be higher-is-better; see the module docstring.
+        start: Inclusive lower bound of the window, normally ``val_timestamp``.
+        end: Exclusive upper bound. ``None`` means unbounded, which is what the
+            notebook's ``pd.Timestamp.max`` amounts to.
+        decay: Passed to :func:`~redelex.continual.metrics.exp_decay_avg`; ``0``
+            is the plain row-count-weighted mean the published plots used.
+
+    Returns:
+        The weighted average, or ``nan`` when no window in the span is scorable.
+
+    Raises:
+        ValueError: If the three per-row inputs disagree in length, or if no row
+            falls in ``[start, end)`` at all -- an empty span means the wrong
+            ``start`` was passed, not a model with nothing to say.
+    """
+    stamps = pd.Index(times)
+    truth = np.asarray(y_true, dtype=float)
+    pred = np.asarray(y_pred, dtype=float)
+    if not (len(stamps) == truth.size == pred.size):
+        raise ValueError(
+            f"length mismatch: times {len(stamps)}, y_true {truth.size}, "
+            f"y_pred {pred.size}"
+        )
+
+    mask = np.asarray(stamps >= start)
+    if end is not None:
+        mask &= np.asarray(stamps < end)
+    if not mask.any():
+        raise ValueError(f"no rows in [{start!r}, {end!r}); check `start`")
+
+    window_of_row = stamps.to_numpy()[mask]
+    window_truth = truth[mask]
+    window_pred = pred[mask]
+
+    scores: List[float] = []
+    counts: List[int] = []
+    for window in np.unique(window_of_row):  # np.unique sorts, so oldest first
+        rows = window_of_row == window
+        score = float(metric_fn(window_truth[rows], window_pred[rows]))
+        if np.isnan(score):
+            # A single-timestamp window very often holds one class only, where
+            # ROC-AUC simply has no value. The notebook's torchmetrics BinaryAUROC
+            # returns 0.0 there and averages it in as though the model had ranked
+            # every pair backwards; propagating the nan instead would erase the
+            # metric for almost every binary task. Dropping the window is the only
+            # reading that neither fabricates a score nor loses the rest. Note this
+            # also shifts later windows one place earlier in the decay schedule,
+            # which is a no-op at the published `decay=0`.
+            continue
+        scores.append(score)
+        counts.append(int(rows.sum()))
+
+    if not scores:
+        return float("nan")
+    return exp_decay_avg(scores, counts=counts, decay=decay)
+
+
 def summarise(
-    R, baseline: Optional[Sequence[float]] = None, decay: float = 0.0
+    R,
+    baseline: Optional[Sequence[float]] = None,
+    decay: float = 0.0,
+    final_model_decay: Optional[float] = None,
 ) -> Dict[str, object]:
     r"""The four CL metrics plus the drift curve, for a higher-is-better ``R``.
 
@@ -520,36 +662,63 @@ def summarise(
             forward transfer. Defaults to the diagonal-free within-matrix proxy
             described in :func:`_diagonal_free_baseline`.
         decay: Passed to :func:`~redelex.continual.metrics.exp_decay_avg` when
-            collapsing the drift curve to a single number. ``0`` is a plain mean.
+            collapsing row 0 of ``R`` to a single number. ``0`` is a plain mean.
+        final_model_decay: The published decay metric from
+            :func:`final_model_decay_avg`, which needs the per-row predictions
+            and so cannot be recomputed from ``R``. Reported as ``nan`` when the
+            caller has no predictions to hand.
 
     Returns:
         Dict with ``n_episodes``, ``average_accuracy``, ``backward_transfer``,
         ``forward_transfer``, ``forward_transfer_baseline``,
-        ``per_episode_forgetting``, ``drift_curve`` (row 0 of ``R``) and
-        ``drift_curve_avg``. ``nan`` cells propagate rather than being dropped,
-        so an incomplete matrix is visible instead of silently averaged away.
+        ``per_episode_forgetting``, ``drift_curve`` (row 0 of ``R``),
+        ``first_model_episode_decay_avg`` and ``final_model_decay_avg``. ``nan``
+        cells propagate rather than being dropped, so an incomplete matrix is
+        visible instead of silently averaged away.
+
+    ``first_model_episode_decay_avg`` was called ``drift_curve_avg`` and is a
+    within-``R`` quantity: the first increment's per-episode scores, collapsed.
+    It is **not** the number the published plots report -- that is
+    ``final_model_decay_avg``, and :func:`final_model_decay_avg` lists the four
+    ways the two differ.
     """
     matrix = np.asarray(R, dtype=float)
     if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
         raise ValueError(f"`R` must be a square 2-D matrix, got shape {matrix.shape}")
 
+    n = matrix.shape[0]
     if baseline is None:
         base = _diagonal_free_baseline(matrix)
+        # The within-matrix proxy is undefined for episode 1 -- its only earlier
+        # model is the one forward transfer scores -- so episode 1 is dropped from
+        # the average by handing `forward_transfer` the sub-matrix from episode 1
+        # on: its `R[j-1, j]` and `base[j]` then range over episodes 2.. of the
+        # original. Below three episodes nothing is left, and the answer is `nan`
+        # rather than the 0.0 an all-inclusive baseline used to manufacture.
+        fwt = (
+            forward_transfer(matrix[1:, 1:], base[1:], higher_is_better=True)
+            if n >= 3
+            else float("nan")
+        )
     else:
         base = np.asarray(baseline, dtype=float)
+        fwt = forward_transfer(matrix, base, higher_is_better=True)
     drift_curve = matrix[0, :]
 
     return {
-        "n_episodes": int(matrix.shape[0]),
+        "n_episodes": int(n),
         "average_accuracy": average_accuracy(matrix),
         "backward_transfer": backward_transfer(matrix, higher_is_better=True),
-        "forward_transfer": forward_transfer(matrix, base, higher_is_better=True),
+        "forward_transfer": fwt,
         "forward_transfer_baseline": [float(v) for v in base],
         "per_episode_forgetting": [
             float(v) for v in per_episode_forgetting(matrix, higher_is_better=True)
         ],
         "drift_curve": [float(v) for v in drift_curve],
-        "drift_curve_avg": exp_decay_avg(drift_curve, decay=decay),
+        "first_model_episode_decay_avg": exp_decay_avg(drift_curve, decay=decay),
+        "final_model_decay_avg": (
+            float("nan") if final_model_decay is None else float(final_model_decay)
+        ),
     }
 
 
@@ -582,10 +751,20 @@ def parse_args(argv=None):
         help="How to collapse the seeds of one increment into one checkpoint.",
     )
     parser.add_argument(
+        "--val-delta-days",
+        type=float,
+        default=None,
+        help=(
+            "Episode width in days. Must be whatever the run passed to "
+            "continuous_learning.py's --val_delta_days; the boundaries derived "
+            "from it become the columns of R."
+        ),
+    )
+    parser.add_argument(
         "--decay",
         type=float,
         default=0.0,
-        help="Decay for the drift-curve average; 0 is a plain mean.",
+        help="Decay for both decay averages; 0 is a plain (weighted) mean.",
     )
     parser.add_argument(
         "--out",
@@ -595,12 +774,24 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
-def _load_task_context(dataset: str, task_name: str):
-    """Task metadata, episode boundaries and the task table's own columns, imported lazily.
+def _load_task_context(
+    dataset: str, task_name: str, val_delta_days: Optional[float] = None
+):
+    r"""Task metadata, episode boundaries and the task table's own columns, imported lazily.
 
     relbench and the experiment package pull in torch and the dataset cache, so
     importing them at module scope would make the pure functions above
     untestable without the full environment.
+
+    Args:
+        dataset: RelBench dataset name, e.g. ``"rel-f1"``.
+        task_name: RelBench task name, e.g. ``"driver-position"``.
+        val_delta_days: Episode width in days, forwarded to
+            ``ContinuousWrapper.get_splits`` as ``val_delta``. ``None`` keeps the
+            wrapper's default, the dataset's own validation window.
+
+    Returns:
+        ``(task, splits, table_columns)``.
     """
     from relbench.tasks import get_task
 
@@ -608,17 +799,30 @@ def _load_task_context(dataset: str, task_name: str):
 
     task = get_task(dataset, task_name)
     wrapper = ContinuousWrapper(task)
+    # The width has to be the run's own width, not get_splits' default. A run
+    # swept with --val_delta_days cut the timeline into different windows than the
+    # default does, and nothing downstream would notice: `build_matrix` only checks
+    # that the *number* of episodes equals the number of checkpoints, so a matching
+    # count over a mismatched partition passes, and R's rows (checkpoints from one
+    # partition) would be scored against columns (episodes from another).
+    val_delta = None if val_delta_days is None else pd.Timedelta(days=val_delta_days)
     # The full table's columns are exactly the non-prediction columns of the CSV:
     # run_predictions.py seeds the file with `wrapped_task.full_table.df` and only
     # ever appends checkpoint columns to it.
-    return task, wrapper.get_splits(), list(wrapper.full_table.df.columns)
+    return (
+        task,
+        wrapper.get_splits(val_delta=val_delta),
+        list(wrapper.full_table.df.columns),
+    )
 
 
 def main(argv=None) -> int:
     args = parse_args(argv)
 
     predictions = pd.read_csv(args.predictions)
-    task, raw_splits, table_cols = _load_task_context(args.dataset, args.task)
+    task, raw_splits, table_cols = _load_task_context(
+        args.dataset, args.task, val_delta_days=args.val_delta_days
+    )
 
     target_col = args.target_col or task.target_col
     time_col = args.time_col or task.time_col
@@ -630,13 +834,39 @@ def main(argv=None) -> int:
     data_cols = set(map(str, table_cols)) | {str(target_col), str(time_col)}
 
     boundaries = episode_boundaries_from_splits(raw_splits)
-    columns = select_checkpoint_columns(
-        checkpoint_column_candidates(predictions.columns, data_cols),
-        aggregate=args.aggregate,
+    candidates = checkpoint_column_candidates(predictions.columns, data_cols)
+    increments = sorted(checkpoint_columns_by_increment(candidates))
+    if not increments:
+        raise SystemExit(
+            "no '{increment}_{run_id}' prediction columns in "
+            f"{args.predictions}; got columns {list(predictions.columns)[:8]}"
+        )
+
+    # Episode j is aligned to increment j + 1, so the increments present must be
+    # the prefix 1..k for any truncation to be meaningful. Only a *tail* gap can
+    # be dropped. A head or interior gap must not be: run_predictions.py queries
+    # MLflow with no `order_by`, and MLflow defaults to `start_time DESC`, so an
+    # interrupted predict job leaves the NEWEST increments in the CSV. Chopping
+    # the boundary list from the right would then score increment 3 against
+    # episode 0 and print a "drift curve" that improves over time -- from models
+    # that never saw the early episodes. Refuse rather than guess.
+    if increments != list(range(1, len(increments) + 1)):
+        missing = sorted(set(range(1, max(increments) + 1)) - set(increments))
+        raise SystemExit(
+            f"increments {increments} in {args.predictions} are not the prefix "
+            f"1..{len(increments)}: increment(s) {missing} are missing. Episode j "
+            "is aligned to increment j + 1, so the remaining columns cannot be "
+            "matched to episodes. Re-run predictions for the missing increments, "
+            "or drop the later columns to leave a prefix."
+        )
+
+    frame, columns = apply_checkpoint_aggregation(
+        predictions[candidates], aggregate=args.aggregate
     )
-    # A chain that stopped early leaves fewer checkpoints than episodes. Keep the
-    # leading episodes those checkpoints line up with rather than failing, but say
-    # so loudly -- the tail of the drift curve is being dropped.
+    # A chain that stopped early leaves fewer checkpoints than episodes, and the
+    # check above has already established they are the leading ones. Keep the
+    # episodes they line up with rather than failing, but say so loudly -- the
+    # tail of the drift curve is being dropped.
     if len(columns) < len(boundaries) - 1:
         print(
             f"WARNING: only {len(columns)} increment(s) finished but "
@@ -655,7 +885,22 @@ def main(argv=None) -> int:
         aggregate=args.aggregate,
         data_cols=data_cols,
     )
-    summary = summarise(matrix, decay=args.decay)
+    # The deployed model's decay curve, over its own window and everything after
+    # it -- including the RelBench test split, which R has no column for.
+    # `boundaries[-2]` opens the last episode kept above, which is `val_timestamp`
+    # whenever nothing was truncated.
+    summary = summarise(
+        matrix,
+        decay=args.decay,
+        final_model_decay=final_model_decay_avg(
+            predictions[time_col],
+            predictions[target_col],
+            frame[columns[-1]],
+            metric_for_task_type(task.task_type),
+            start=boundaries[-2],
+            decay=args.decay,
+        ),
+    )
 
     metric_name = "roc_auc" if metric_for_task_type(task.task_type) is roc_auc else "-mae"
     counts = [int(np.sum(episodes == j)) for j in range(matrix.shape[0])]
@@ -673,11 +918,12 @@ def main(argv=None) -> int:
         "average_accuracy",
         "backward_transfer",
         "forward_transfer",
-        "drift_curve_avg",
+        "first_model_episode_decay_avg",
+        "final_model_decay_avg",
     ):
-        print(f"{key:>20}: {summary[key]:.4f}")
-    print(f"{'drift_curve':>20}: {np.round(summary['drift_curve'], 4).tolist()}")
-    print(f"{'forgetting':>20}: {np.round(summary['per_episode_forgetting'], 4).tolist()}")
+        print(f"{key:>30}: {summary[key]:.4f}")
+    print(f"{'drift_curve':>30}: {np.round(summary['drift_curve'], 4).tolist()}")
+    print(f"{'forgetting':>30}: {np.round(summary['per_episode_forgetting'], 4).tolist()}")
 
     if np.isnan(matrix).any():
         print("\nWARNING: R holds nan cells (empty episode, or AUC on one class).")
