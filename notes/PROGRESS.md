@@ -28,17 +28,29 @@ See `notes/DECISIONS.md` and commit b3bf3f7.
   `naive`/`er`/`der_pp`/`ewc`/`lwf`/`freeze_extend` switch to the increment at episode 2;
   `er`/`der_pp` replay a 830-exemplar buffer; `freeze_extend` adds exactly 1 adapter.
 
-## BLOCKER: the GPUs are gone again (needs sudo)
+## BLOCKER: GPU access revoked at the CONTAINER level (2026-09-06)
 
-`nvidia-smi` -> `Failed to initialize NVML: Unknown Error`; `torch.cuda.is_available()` is False.
-**`/dev/nvidia0` is missing** while `/dev/nvidia1`-`/dev/nvidia4` are present; driver 560.35.03 is
-still loaded. This is the same failure the 2026-09-01 session hit. It is host-level and needs sudo
-(`nvidia-smi -r`, a driver reload, or finding what wedged them).
+`nvidia-smi` -> `Failed to initialize NVML: Unknown Error`; `torch.cuda.is_available()` is False
+under every `CUDA_VISIBLE_DEVICES` setting tried.
 
-The smoke run finished BEFORE they vanished, so its results stand.
+**Diagnosis (this is NOT a driver crash):** the device nodes exist and are world read/write
+(`crw-rw-rw-` on `/dev/nvidia1`-`4`, `/dev/nvidiactl`, `/dev/nvidia-uvm`), yet `os.open()` on any of
+them returns **EPERM**. World-writable + EPERM means the **container's device cgroup is denying
+access**, not the driver failing and not file permissions. Note also that `/dev/nvidia0` is absent
+while `nvidia1`-`nvidia4` are present.
 
-Nothing else is blocked: the analysis path, the synthetic-DB work and the backbone integration are
-all CPU-side until a grid can run.
+So `nvidia-smi -r` or a driver reload will NOT fix this. What is needed is for the container to be
+granted GPU device access again (e.g. `--gpus all` / the correct `device_cgroup_rules`), by whoever
+runs the sandbox. Driver 560.35.03 is still loaded on the host.
+
+## Machine facts that constrain the CPU fallback
+
+- **64 PHYSICAL cores** (128 logical, 2 threads/core) on an AMD EPYC 7742. Parallelism projections
+  must use 64, not 128.
+- **`/dev/shm` is 32 GB**, not RAM-sized -- this hard-caps Ray's plasma object store, which is where
+  a shared graph would live.
+- 503 GB RAM, ~339 GB available (another tenant is using ~164 GB).
+- **Load average ~8.8: the box is NOT idle.** Roughly 55 physical cores are actually free.
 
 ## Key context a new session needs
 
