@@ -8,82 +8,37 @@ Priority: (1) integrate real CL techniques, (2) add datasets or rigorously argue
 
 ---
 
-## Current phase: Phase 0 — finish the foundation
+## Current phase: post-review fixes done, BLOCKED on GPUs (2026-09-06)
 
-| Step | Status |
-|---|---|
-| Cross-session persistence (`notes/`) | DONE 2026-09-02 |
-| 0a. Commit the working tree | DONE - 6 commits, tree clean |
-| 0d. Robustness fixes | DONE - seeds/mlflow_uri/trial-tolerance |
-| 0f. rel-stack download + probe | DONE - 53 episodes, use download=False |
-| 0f. rel-amazon download + probe | DONE - 61 episodes, span 2008-2018 |
-| 0b. Port verification vs MLflow (GATE) | **PASSED** - all 11 episodes, max gap 1.65% |
-| 0c. Local multi-GPU runner | DONE - scripts/run_grid.py |
-| Phase 1: CL metrics (ACC/BWT/FWT/forgetting + decay) | DONE - redelex/continual/metrics.py |
-| Phase 1: Replay family (reservoir + herding) | DONE - redelex/continual/replay.py |
-| Phase 1: Regularisation family (EWC) | DONE - redelex/continual/regularization.py |
-| Phase 1: Wire CL families into the experiment script | TODO - next |
-| Phase 1: Parameter isolation family | TODO |
-| Phase 1: LwF distillation | TODO |
-| Phase 2: HeteroGAT backbone seam, dI ablation | TODO |
-
-## Current phase: Phase 1 — CL methods wired and smoke-tested (2026-09-05)
-
-**Roster is 8 modes** (`experiments/continuous_learning/cl_modes.py` explains why each earns a slot):
-`from_scratch`, `joint` (was ft_full), `naive` (was ft_newonly), `er`, `der_pp`, `ewc`, `lwf`,
-`freeze_extend`. `ft_upsample` kept ONLY to reproduce the submitted paper. Old names still resolve
-as aliases, so published runs stay comparable.
+**The code review returned NO-GO and all six defects are fixed and re-validated.**
+See `notes/DECISIONS.md` and commit b3bf3f7.
 
 | step | status |
 |---|---|
-| Evaluation-protocol fix (step-based val, 25k cap) | DONE |
-| `cl_penalty` hook on the wrapper | DONE |
-| `cl_modes.py`, chain state threading (buffer/anchor/adapters) | DONE |
-| er / der_pp / ewc / lwf / freeze_extend wired | DONE |
-| `redelex/continual/adapters.py`, `drift.py`, `scripts/build_evaluation_matrix.py` | DONE + verified |
-| Smoke test all modes on rel-f1 | **8/8 validated end-to-end** |
-| Code review of the whole experiment | RUNNING (5 lenses + adversarial refutation) |
-| **Main grid launch** | HELD pending review GO/NO-GO |
+| Five-lens code review with adversarial refutation | DONE - returned NO-GO |
+| M1-M6 fixes | DONE, committed b3bf3f7 |
+| Post-fix smoke, 8 modes x 2 seeds on rel-f1 | **8/8 succeeded** |
+| **Main grid launch** | **BLOCKED - no GPUs** |
 
-586 tests passing. 5 commits since the protocol work.
+### Verified on real artefacts after the fixes
 
-## Bugs found by adversarial verification (all fixed, all had regression tests added)
+- **NaN weights: 21/21 checkpoints before -> 0/32 after.**
+- **Checkpoint size 8,272,841 -> 5,068,690 params** (the duplicated encoder registration is gone).
+- Mode mechanics all correct: `from_scratch`/`joint` train the full window at both episodes;
+  `naive`/`er`/`der_pp`/`ewc`/`lwf`/`freeze_extend` switch to the increment at episode 2;
+  `er`/`der_pp` replay a 830-exemplar buffer; `freeze_extend` adds exactly 1 adapter.
 
-1. **`AdapterStack` strict=False load wiped the stack.** "No adapter keys" was read as "zero
-   adapters" and the stack was rebuilt empty -- and `freeze_extend` loads with `strict=False`
-   precisely. Any chain seeded from a checkpoint without adapters silently lost every adapter and
-   the zero-forgetting guarantee, reporting no missing keys and no warning.
-2. **Freeze invariant restored only on the rebuild path**, so a same-shaped load inherited whatever
-   requires_grad state the destination had.
-3. **`add_adapter` was not exception-safe** -- froze before constructing, so a failed construction
-   left nothing trainable.
-4. **Post-fit passes ran on the wrong device.** Lightning leaves the model on CPU after `fit`.
-   DER++ died; EWC only worked by coincidence. Invisible because `log_to_driver=False` swallows
-   worker output -- the traceback existed only as an MLflow param.
-5. **Early-stopped chains exited 0**, so `run_grid.py` wrote done-markers for incomplete cells that
-   would never be retried. Now exits non-zero.
-6. **PSI returned 0.0 for imbalanced/binary targets** (5% -> 100% read as "no shift"), including a
-   residual at `bins=2` -- the value a caller would naturally pass for a binary target.
-7. **`target_drift` docstring recommended a measure that returns 0.0** on a total class-prior
-   reversal (PSI consumes samples, not probability vectors).
-8. **A test named for column filtering never reached the filter**; the filter was also weaker than
-   its comment, so a data column named like a checkpoint would have been scored as a model.
+## BLOCKER: the GPUs are gone again (needs sudo)
 
-## Smoke-test evidence the CL machinery engages
+`nvidia-smi` -> `Failed to initialize NVML: Unknown Error`; `torch.cuda.is_available()` is False.
+**`/dev/nvidia0` is missing** while `/dev/nvidia1`-`/dev/nvidia4` are present; driver 560.35.03 is
+still loaded. This is the same failure the 2026-09-01 session hit. It is host-level and needs sudo
+(`nvidia-smi -r`, a driver reload, or finding what wedged them).
 
-| mode | ep1 train window | ep2 train window | chain state |
-|---|---|---|---|
-| from_scratch | 1950 (full) | 1950 (full) | - |
-| joint | 1950 | 1950 (full) | - |
-| naive | 1950 | 1999 (increment) | - |
-| er | 1950 | 1999 (increment) | `replay_buffer_used=830` |
-| lwf | 1950 | 1999 (increment) | frozen teacher |
-| ewc | 1950 | 1999 (increment) | Fisher anchor |
-| der_pp | 1950 | 1999 (increment) | buffer + stored logits |
-| freeze_extend | 1950 | 1999 (increment) | 1 adapter: 4,240 trainable vs 5,067,905 frozen |
+The smoke run finished BEFORE they vanished, so its results stand.
 
-The `er` row is the key one: the buffer filled during episode 1 (which runs as from_scratch for
-every method) and replayed at episode 2, confirming `chain_learning_mode` is threaded correctly.
+Nothing else is blocked: the analysis path, the synthetic-DB work and the backbone integration are
+all CPU-side until a grid can run.
 
 ## Key context a new session needs
 
