@@ -165,18 +165,16 @@ else
     printf '%s\n' "$SIGNATURE" > "$PARAMS_FILE"
 fi
 
-# Slurm has already restricted this job to its allocated device; take that
-# device rather than letting the experiment's free-memory auto-selection
-# renumber CUDA_VISIBLE_DEVICES relative to the visible set and land on the
-# wrong physical GPU (see continuous_learning.py:882-890).
-GPU_ID="${CUDA_VISIBLE_DEVICES%%,*}"
-GPU_ID="${GPU_ID:-0}"
+# Deliberately NOT passing --gpu_ids. Slurm has already restricted this job to
+# its allocated device, and the ids it exports are relative to that allocation,
+# so re-pinning inside the job can only agree with Slurm or contradict it. Ask
+# for resources (--gres=gpu:1) and let the scheduler place the work.
 NUM_CPUS="${SLURM_CPUS_PER_TASK:-4}"
 
 echo "=== $(date -Is) node $(hostname) job ${SLURM_JOB_ID:-none} ==="
 echo "chain   : $CHAIN_KEY"
 echo "chunk   : $CHUNK_KEY (up to $EPISODES episode(s) from wherever the chain stands)"
-echo "gpu     : id $GPU_ID of CUDA_VISIBLE_DEVICES='${CUDA_VISIBLE_DEVICES:-unset}'"
+echo "gpu     : CUDA_VISIBLE_DEVICES='${CUDA_VISIBLE_DEVICES:-unset}' (assigned by Slurm)"
 echo "models  : $MODEL_DIR"
 echo "log     : $LOG"
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader || true
@@ -197,7 +195,6 @@ rc=0
     --seed="$SEED" \
     --max_increments="$EPISODES" \
     --num_gpus=1 \
-    --gpu_ids="$GPU_ID" \
     --num_cpus="$NUM_CPUS" \
     --cpus_per_trial="$CPUS_PER_TRIAL" \
     --torch_threads="$TORCH_THREADS" \

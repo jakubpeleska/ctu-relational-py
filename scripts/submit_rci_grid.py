@@ -988,11 +988,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         print("Nothing left to submit.")
         return 0
 
-    lanes = [lane for lane in range(args.lanes) if lane not in state.busy_lanes]
-    if not lanes:
-        print(f"All {args.lanes} lanes are busy ({sorted(state.busy_lanes)}); "
-              f"nothing submitted. Re-run when a lane drains.")
-        return 0
+    # Use every lane, including ones with work already in flight. Slurm enforces
+    # the concurrency limit itself, so extra jobs queue rather than over-running,
+    # and queueing is fine. Skipping busy lanes was strictly worse: with three of
+    # four lanes occupied, the whole remainder was funnelled into the single free
+    # lane and ran serially on one GPU.
+    lanes = list(range(args.lanes))
+    if state.busy_lanes:
+        print(f"lanes {sorted(state.busy_lanes)} already have work in flight; "
+              f"new jobs queue behind it.")
 
     plan = assign_lanes(todo, lanes)
     print(format_cost(todo, cfg, "TO SUBMIT NOW"))
@@ -1006,7 +1010,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     _, _, grand = total_hours(todo, cfg)
     n_jobs = sum(len(chain) for chain in todo)
     print(f"\n==> {n_jobs} job(s), ~{grand:.1f} GPU-h of fair-share, "
-          f"~{grand / len(lanes):.1f} h wall on {len(lanes)} GPU(s).")
+          f"~{grand / len(lanes):.1f} h wall on {len(lanes)} GPU(s) "
+          f"(plus queueing).")
 
     if args.dry_run:
         where = f"on {args.ssh} over ssh" if args.ssh else "in a local shell"

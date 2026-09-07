@@ -515,25 +515,50 @@ def test_each_lane_is_a_serial_dependency_chain(cluster):
                          for c in cluster.submitted})
 
 
-def test_busy_lanes_are_left_alone(monkeypatch):
-    """Two submissions must not add up to more than four GPUs."""
-    fake = FakeCluster(queue="clg-L0-rel-stack__post-votes__ewc__c00\n"
-                             "clg-L1-rel-stack__post-votes__er__c00\n")
-    monkeypatch.setattr(srg, "run_command", fake)
-    main(["--pairs", "rel-f1:driver-dnf", "--yes"])
-    lanes = {re.search(r"--job-name=clg-L(\d)-", c).group(1)
-             for c in fake.submitted}
-    assert lanes.isdisjoint({"0", "1"})
-    assert lanes
+def test_busy_lanes_still_receive_work(monkeypatch, capsys):
+    """New work goes into every lane, including ones already in flight.
+
+    Skipping busy lanes was strictly worse than queueing: with three of four
+    lanes occupied, the entire remainder was funnelled into the one free lane and
+    ran serially on a single GPU. Slurm enforces the concurrency limit itself, so
+    extra jobs queue rather than over-running.
+    """
+    import scripts.submit_rci_grid as m
+
+    def busy(cfg, ssh):
+        state = m.ClusterState()
+        state.busy_lanes = {0, 2, 3}
+        return state
+
+    monkeypatch.setattr(m, "read_state", busy)
+    monkeypatch.setattr(m, "run_command", lambda *a, **k: subprocess.CompletedProcess(
+        args="sbatch", returncode=0, stdout="Submitted batch job 1\n", stderr=""))
+
+    rc = m.main(["--tier", "A", "--num-samples", "1", "--dry-run"])
+    assert rc in (0, None)
+    out = capsys.readouterr().out
+    assert "lane 0" in out and "lane 3" in out, "busy lanes must still be used"
 
 
-def test_all_lanes_busy_submits_nothing(monkeypatch, capsys):
-    fake = FakeCluster(queue="".join(
-        f"clg-L{i}-rel-stack__post-votes__ewc__c00\n" for i in range(4)))
-    monkeypatch.setattr(srg, "run_command", fake)
-    assert main(["--pairs", "rel-f1:driver-dnf", "--yes"]) == 0
-    assert fake.submitted == []
-    assert "lanes are busy" in capsys.readouterr().out
+def test_all_lanes_busy_still_submits(monkeypatch, capsys):
+    # Queueing behind in-flight work is the intended outcome, not a reason to
+    # submit nothing and make someone re-run the command later.
+    import scripts.submit_rci_grid as m
+
+    def busy(cfg, ssh):
+        state = m.ClusterState()
+        state.busy_lanes = {0, 1, 2, 3}
+        return state
+
+    monkeypatch.setattr(m, "read_state", busy)
+    monkeypatch.setattr(m, "run_command", lambda *a, **k: subprocess.CompletedProcess(
+        args="sbatch", returncode=0, stdout="Submitted batch job 1\n", stderr=""))
+
+    rc = m.main(["--tier", "A", "--num-samples", "1", "--dry-run"])
+    assert rc in (0, None)
+    out = capsys.readouterr().out
+    assert "already have work in flight" in out
+    assert "sbatch" in out, "work must still be planned"
 
 
 def test_resubmission_skips_completed_work(monkeypatch, capsys):
@@ -717,13 +742,24 @@ def test_run_chain_passes_resume_and_max_increments(fake_repo, tmp_path):
     assert "--learning_mode=er" in log
 
 
-def test_run_chain_pins_the_slurm_allocated_gpu(fake_repo, tmp_path):
-    """Letting the experiment auto-select would renumber CUDA_VISIBLE_DEVICES
-    against the visible set and land on the wrong physical device."""
-    out = tmp_path / "out"
-    run_chain(fake_repo(), out)
-    assert "--gpu_ids=3" in read_log(out)
-    assert "--num_gpus=1" in read_log(out)
+def test_run_chain_does_not_pin_a_gpu(tmp_path):
+    """The job must ask for a GPU and let Slurm place it.
+
+    Slurm restricts the job to its allocation and exports ids relative to it, so
+    re-pinning inside the job can only agree with the scheduler or contradict it.
+    Requesting resources (--gres=gpu:1) and leaving placement alone is both
+    simpler and the cluster's expectation.
+    """
+    script = (REPO_ROOT / "slurm" / "rci" / "run_chain.sh").read_text()
+    # Strip comments: the file explains WHY it does not pin, and that prose
+    # mentions the flag. Assert what the script executes, not what it says.
+    code = "\n".join(
+        line for line in script.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert "--gres=gpu:1" in script, "the job must still request a GPU"
+    assert "--gpu_ids" not in code, "must not pin a device inside the allocation"
+    assert "--nodelist" not in code, "must not pin a node"
+    assert "CUDA_VISIBLE_DEVICES=" not in code, "must not override Slurm's allocation"
 
 
 def test_run_chain_model_save_dir_does_not_depend_on_the_chunk(fake_repo, tmp_path):
