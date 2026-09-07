@@ -156,6 +156,40 @@ class Partition:
 
 
 # Limits per the RCI GPU rules. `--time-limit` may go below these, never above.
+def resolve_partition(spec: str) -> Partition:
+    r"""Resolve one partition name, or a comma-separated list, to a Partition.
+
+    Slurm accepts several partitions for one job and starts it on whichever can
+    run it soonest. That is the useful lever when every partition is fully
+    allocated: the wait dominates, not the device.
+
+    A list is summarised conservatively -- the SHORTEST wall limit, so a job
+    cannot outlive whichever partition takes it, and the SLOWEST device, so the
+    cost estimate is an upper bound rather than a hopeful one.
+
+    Args:
+        spec: ``"gpufast"`` or ``"amdgpufast,gpufast,gpu"``.
+
+    Returns:
+        A Partition whose ``name`` is the original spec (passed through to
+        ``sbatch --partition``) and whose limits bound every member.
+
+    Raises:
+        ValueError: If any name is unknown.
+    """
+    names = [n.strip() for n in spec.split(",") if n.strip()]
+    if not names:
+        raise ValueError("--partition must name at least one partition")
+    unknown = [n for n in names if n not in PARTITIONS]
+    if unknown:
+        raise ValueError(
+            f"unknown partition(s) {unknown}; known: {sorted(PARTITIONS)}"
+        )
+    members = [PARTITIONS[n] for n in names]
+    slowest = max(members, key=lambda p: DEVICE_FACTOR.get(p.device, 1.0))
+    return Partition(spec, min(p.max_hours for p in members), slowest.device)
+
+
 PARTITIONS: Dict[str, Partition] = {
     "amdgpufast": Partition("amdgpufast", 4.0, "A100"),
     "gpufast": Partition("gpufast", 4.0, "V100"),
@@ -733,7 +767,7 @@ def format_provenance(cfg: Config, lanes: int) -> str:
         f"basis   : measured A100 GPU-h per dataset (7 modes x 5 seeds), divided "
         f"by modes x seeds x episodes",
         f"scaling : {cfg.num_samples} seed(s), device factor {cfg.device_factor:g} "
-        f"({PARTITIONS[cfg.partition].device} on {cfg.partition}), per-mode "
+        f"({resolve_partition(cfg.partition).device} on {cfg.partition}), per-mode "
         f"factors are a heuristic, not a measurement",
         f"lanes   : {lanes} of {MAX_CONCURRENT_GPUS} GPUs, so wall-clock is "
         f"roughly GPU-h / {lanes} plus queueing",
@@ -755,9 +789,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     p.add_argument("--modes", nargs="+", default=list(MODE_ORDER))
     p.add_argument("--lanes", type=int, default=MAX_CONCURRENT_GPUS,
                    help=f"Concurrent GPUs. Hard cap {MAX_CONCURRENT_GPUS}.")
-    p.add_argument("--partition", default="amdgpufast", choices=sorted(PARTITIONS),
-                   help="amdgpufast is A100 and 4 h: the cost model was measured "
-                        "on A100, and short jobs are what fair-share rewards.")
+    p.add_argument("--partition", default="amdgpufast",
+                   help="One partition, or a comma-separated list. Slurm places a "
+                        "job on whichever listed partition can run it soonest, "
+                        "which matters when every partition is allocated and the "
+                        "wait -- not the device -- is what costs wall-clock. The "
+                        "wall limit and device factor are taken from the most "
+                        "conservative member of the list. amdgpufast is A100 (the "
+                        "device the cost model was measured on) and 4 h.")
     p.add_argument("--time-limit", type=float, default=None,
                    help="Wall limit per job in hours. Default: the partition's.")
     p.add_argument("--time-fill", type=float, default=0.75,
@@ -825,7 +864,7 @@ def config_from_args(args: argparse.Namespace) -> Config:
         SystemExit: if the wall limit exceeds what the partition allows, or the
             lane count exceeds the GPU cap.
     """
-    partition = PARTITIONS[args.partition]
+    partition = resolve_partition(args.partition)
     time_limit = args.time_limit if args.time_limit is not None else partition.max_hours
     if time_limit > partition.max_hours:
         raise SystemExit(

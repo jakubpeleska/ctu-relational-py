@@ -923,3 +923,44 @@ def test_ignore_state_allows_submission_when_the_queue_is_unreadable(monkeypatch
     rc = m.main(["--yes", "--ignore-state", "--pairs", "rel-f1:driver-top3",
                  "--modes", "naive"])
     assert rc in (0, None), "--ignore-state must not refuse"
+
+
+# --- multi-partition placement ----------------------------------------------
+
+
+def test_a_partition_list_is_summarised_conservatively():
+    """Slurm can place a job on whichever listed partition frees up first.
+
+    That is the lever that matters when every partition is fully allocated: the
+    queue wait dominates, not the device. The summary must be pessimistic --
+    shortest wall limit so a job cannot outlive whichever partition takes it, and
+    slowest device so the cost estimate is an upper bound.
+    """
+    import scripts.submit_rci_grid as m
+
+    combined = m.resolve_partition("amdgpufast,gpuextralong")
+    assert combined.name == "amdgpufast,gpuextralong"  # passed through to sbatch
+    assert combined.max_hours == 4.0, "must take the SHORTEST wall limit"
+    assert combined.device == "V100", "must take the SLOWEST device"
+    assert m.DEVICE_FACTOR[combined.device] == 1.8
+
+
+def test_single_partition_still_resolves_exactly():
+    import scripts.submit_rci_grid as m
+
+    p = m.resolve_partition("amdgpufast")
+    assert (p.name, p.max_hours, p.device) == ("amdgpufast", 4.0, "A100")
+
+
+def test_unknown_partition_in_a_list_is_rejected():
+    import scripts.submit_rci_grid as m
+
+    with pytest.raises(ValueError, match="unknown partition"):
+        m.resolve_partition("amdgpufast,not_a_partition")
+
+
+def test_empty_partition_spec_is_rejected():
+    import scripts.submit_rci_grid as m
+
+    with pytest.raises(ValueError, match="at least one"):
+        m.resolve_partition(" , ")
