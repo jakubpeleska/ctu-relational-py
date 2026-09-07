@@ -459,3 +459,76 @@ def test_dry_run_plans_without_building(tmp_path, capsys):
 def test_main_refuses_an_unknown_dataset(tmp_path):
     with pytest.raises(ValueError, match="no download policy"):
         mg.main(["--check", "rel-nonesuch", "--cache-dir", str(tmp_path)])
+
+
+# --- regressions found by adversarial review --------------------------------
+
+
+def test_empty_db_directory_is_not_treated_as_a_cached_database(tmp_path):
+    """An interrupted extraction leaves an empty `db/`, which must not count.
+
+    RelBench itself requires `exists() and any(iterdir())`
+    (relbench/base/dataset.py). Testing only `is_dir()` disagrees, and the
+    disagreement is consequential: for rel-amazon it routes the build into
+    `make_db()`, which fetches a UCSD file that was removed and now 404s. The job
+    is designed to be killed at the wall clock and resubmitted, so a
+    half-extracted directory is the expected state, not an exotic one.
+    """
+    import sys
+
+    sys.path.insert(0, "scripts")
+    import materialize_graphs as mg
+
+    relbench_cache = tmp_path / "relbench"
+    db = relbench_cache / "rel-amazon" / "db"
+    db.mkdir(parents=True)
+
+    assert mg.db_is_usable(db) is False
+    state = mg.inspect("rel-amazon", tmp_path / "cache", relbench_cache)
+    assert state.db_present is False
+    assert state.status == "needs-download"
+
+    # and therefore the prepared download is taken, not the dead raw path
+    should_download, reason = mg.download_decision("rel-amazon", state.db_present)
+    assert should_download is True, reason
+
+
+def test_non_empty_db_directory_is_treated_as_cached(tmp_path):
+    import sys
+
+    sys.path.insert(0, "scripts")
+    import materialize_graphs as mg
+
+    db = tmp_path / "relbench" / "rel-amazon" / "db"
+    db.mkdir(parents=True)
+    (db / "customer.parquet").write_bytes(b"not really parquet")
+
+    assert mg.db_is_usable(db) is True
+    state = mg.inspect("rel-amazon", tmp_path / "cache", tmp_path / "relbench")
+    assert state.db_present is True
+
+
+def test_check_mode_does_not_build_anything(tmp_path, monkeypatch):
+    """`--check` must be safe to run on an RCI login node.
+
+    The previous guard test asserted torch was absent from the PARENT's
+    sys.modules and that the exit code was 1 -- both of which a mutant that
+    performs the full build also satisfies, because the work happens in a child
+    process. Assert the observable effect instead: nothing appears on disk.
+    """
+    import sys
+
+    sys.path.insert(0, "scripts")
+    import materialize_graphs as mg
+
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    before = sorted(p.name for p in cache.rglob("*"))
+
+    try:
+        mg.main(["--check", "rel-f1", "--cache-dir", str(cache)])
+    except SystemExit:
+        pass
+
+    after = sorted(p.name for p in cache.rglob("*"))
+    assert after == before, f"--check wrote to disk: {set(after) - set(before)}"

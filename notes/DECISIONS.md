@@ -204,3 +204,34 @@ otherwise be told to trust.
   seeds are no longer drawn by `tune.randint` inside the episode loop but eagerly at
   `continuous_learning.py:850-860` - while its conclusion is unchanged and now stronger:
   `--seed=42` still yields `[102, 435, 860, 270, 106]`, and resuming can no longer shift the draw.
+
+## Stay on relbench 2.1.1 (2026-09-07)
+
+**Decision: do NOT upgrade to relbench 3.0.1.** Confirmed by Jakub.
+
+3.0.1 is a breaking rewrite, not a point release. `relbench.datasets` and `relbench.tasks` no longer
+exist; the package is now `hf.py` / `load.py` / `manifest.py` / `schema.py` / `submit.py` with a
+single `load_dataset()` backed by HuggingFace. **Our repo has 36 call sites** using the 2.x API.
+
+It very likely fixes the stale `rel-stack/db.zip` SHA256 (the pinned-hash problem disappears once
+data moves to HF hosting) and may fix rel-amazon too. That is not worth taking 9 days from the
+deadline, because it would require: rewriting the data layer, re-verifying that task definitions and
+splits are unchanged (they gate every episode count in `analysis/dataset-episodes-measured.md`), and
+re-earning the port-fidelity gate. RelArena also pins `relbench==2.1.2`, so a 3.0.1 upgrade would
+fight the RelGNN/RelGT integration.
+
+The two workarounds we carry instead are one line each and both are tested:
+- **rel-stack: `download=False`.** Upstream republished `db.zip` without refreshing the pin.
+- **rel-amazon: `download=True`.** It CANNOT be built from raw -- `make_db()` fetches
+  `https://datarepo.eng.ucsd.edu/mcauley_group/data/amazon_v2/metaFiles2/meta_Books.json.gz`, which
+  UCSD removed and now 404s. `download=True` fetches RelBench's prepared DB instead.
+
+## The 4-GPU limit is enforced by Slurm, not by us (2026-09-07)
+
+`scripts/submit_rci_grid.py` deals work into 4 lanes and reads `squeue` to see which are busy. An
+earlier version REFUSED to submit when `squeue` was unreachable, on the grounds that two submissions
+could then hold 8 GPUs. Jakub corrected this: **the Slurm account is capped at 4 concurrent GPUs
+regardless**, so an over-submission queues rather than over-runs.
+
+So an unreadable `squeue` costs latency -- work dealt into a lane that is actually busy waits behind
+it -- not quota. It now warns and continues. Do not "fix" this back into a refusal.

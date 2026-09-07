@@ -195,6 +195,19 @@ def default_relbench_cache() -> Path:
         return Path.home() / ".cache" / "relbench"
 
 
+def db_is_usable(db_path: Path) -> bool:
+    r"""Whether RelBench would treat this directory as an existing database.
+
+    `relbench/base/dataset.py` requires ``exists() and any(iterdir())``, so an
+    empty-but-present ``db/`` is NOT a cached database to it. Testing only
+    ``is_dir()`` disagrees with that, and the disagreement is consequential: for
+    rel-amazon it routes the build into ``make_db()``, which fetches a UCSD file
+    that no longer exists and 404s. An interrupted extraction leaves exactly such
+    a directory.
+    """
+    return db_path.is_dir() and any(db_path.iterdir())
+
+
 def db_dir(relbench_cache: Path, name: str) -> Path:
     r"""Directory of extracted parquet tables for `name`."""
     return relbench_cache / name / "db"
@@ -382,14 +395,14 @@ def inspect(name: str, cache_dir: Path, relbench_cache: Path) -> DatasetState:
 
     return DatasetState(
         name=name,
-        db_present=db_path.is_dir(),
+        db_present=db_is_usable(db_path),
         expected=expected,
         materialised=materialised,
         corrupt=corrupt,
         schema_present=schema_present,
         cache_bytes=dir_bytes(mat_path),
         status=classify(
-            db_path.is_dir(), expected, materialised, corrupt, schema_present
+            db_is_usable(db_path), expected, materialised, corrupt, schema_present
         ),
         receipt=receipt,
     )
