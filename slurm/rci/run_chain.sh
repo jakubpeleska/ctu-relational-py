@@ -113,6 +113,16 @@ done
 
 cd "$REPO"
 
+# Pin BLAS threading. `--torch_threads 1` sets only torch's intra-op pool; OpenMP
+# and MKL size themselves from the machine, so on these 128-core nodes each trial
+# would spawn 128 BLAS threads and four concurrent trials would thrash the node.
+# Measured on comparable hardware: 8 threads buy 2.2x on a training step
+# (per-core efficiency 0.27) while single-threaded processes hold 0.74-0.80, so
+# oversubscription is strictly worse than simply running more trials.
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+
 # `__` separates the three fields because mode names contain single underscores
 # (from_scratch, der_pp, freeze_extend) and dataset/task names contain hyphens.
 CHAIN_KEY="${DATASET}__${TASK}__${MODE}"
