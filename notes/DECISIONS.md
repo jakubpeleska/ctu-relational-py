@@ -235,3 +235,22 @@ regardless**, so an over-submission queues rather than over-runs.
 
 So an unreadable `squeue` costs latency -- work dealt into a lane that is actually busy waits behind
 it -- not quota. It now warns and continues. Do not "fix" this back into a refusal.
+
+## RCI partitions: `amdgpufast` is NVIDIA (2026-09-07)
+
+Verified by running a real CUDA job there, not inferred from the name.
+
+- **`amdgpufast`** (g01-g12): **NVIDIA A100-SXM4-40GB**, capability (8,0), driver 550.54.14,
+  `torch 2.9.1+cu128` works. The "amd" is the HOST CPU -- `scontrol show node g01` reports
+  `Arch=x86_64, CoresPerSocket=32, CPUTot=128`, i.e. AMD EPYC. GRES is `gpu:a100`, and A100 is
+  NVIDIA-only. **4 h wall limit.**
+- **`gpufast` / `gpu` / `gpulong` / `gpuextralong`** (n21-n32): **Tesla V100-SXM2-32GB**,
+  capability (7,0), driver 575.51.03. Verified on n24. Limits 4 h / 1 d / 3 d / 21 d.
+
+**Prefer `amdgpufast` for the grid**: its A100-SXM4-40GB is the same device the cost model was
+measured on (potato), so GPU-hour estimates transfer directly with a device factor of 1. The V100
+partitions need a device factor that is currently a guess (1.8), so every estimate there is that
+guess times the truth.
+
+The 4 h limit is why chains are chunked rather than submitted whole; the longest tier-A job is
+2.34 h.
