@@ -759,7 +759,13 @@ def test_run_chain_does_not_pin_a_gpu(tmp_path):
     assert "--gres=gpu:1" in script, "the job must still request a GPU"
     assert "--gpu_ids" not in code, "must not pin a device inside the allocation"
     assert "--nodelist" not in code, "must not pin a node"
-    assert "CUDA_VISIBLE_DEVICES=" not in code, "must not override Slurm's allocation"
+    # An `echo` that reports what Slurm handed us is wanted; an assignment that
+    # overrides it is not.
+    assignments = [
+        line for line in code.splitlines()
+        if re.match(r"\s*(export\s+)?CUDA_VISIBLE_DEVICES=", line)
+    ]
+    assert not assignments, f"must not override Slurm's allocation: {assignments}"
 
 
 def test_run_chain_model_save_dir_does_not_depend_on_the_chunk(fake_repo, tmp_path):
