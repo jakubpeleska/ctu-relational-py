@@ -47,6 +47,7 @@ from relbench.datasets import get_dataset
 from relbench.tasks import get_task
 
 from redelex.data.graph import make_pkey_fkey_graph
+from redelex.continual.adapters import AdapterStack
 
 from experiments.continuous_learning.utils import (
     get_attribute_schema,
@@ -83,7 +84,13 @@ DEFAULT_SEED = 42
 
 # Hyperparameters that change the model or the sampling, and so require
 # rebuilding one or both before a checkpoint can be scored.
-ARCH_PARAMS = ("gnn_channels", "gnn_layers", "gnn_aggr", "num_neighbors", "batch_size")
+# "n_adapters" and "adapter_rank" are part of the ARCHITECTURE, not of the
+# training config: a freeze_extend checkpoint from episode k carries k-1 adapter
+# modules, and rebuilding a bare backbone to receive it fails with "Unexpected
+# key(s) in state_dict: adapters.adapters.0.down.weight". Every mode except
+# freeze_extend logs n_adapters=0 and is unaffected.
+ARCH_PARAMS = ("gnn_channels", "gnn_layers", "gnn_aggr", "num_neighbors",
+               "batch_size", "n_adapters", "adapter_rank")
 
 # Params that fix what a "score" means for a run. They must be identical across
 # every run that contributes a row to R: `best_val_*` is a max over
@@ -128,6 +135,48 @@ def _run_arch(run: pd.Series, defaults: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # --- run selection ----------------------------------------------------------
+
+
+def adapter_stack_for(arch: Dict[str, Any]) -> Optional[AdapterStack]:
+    r"""The adapter stack a checkpoint with this architecture was saved with.
+
+    Returns ``None`` for every mode but freeze_extend, which is what those
+    checkpoints expect: a model with an ``adapters`` child it never had would
+    report the adapter keys as *missing*, the mirror image of the bug this
+    exists to prevent.
+
+    The stack is grown with repeated :meth:`AdapterStack.add_adapter` rather
+    than constructed at size, because that is what fixes the submodule names
+    (``adapters.adapters.<i>.*``) the state_dict keys refer to. The weights are
+    overwritten by ``load_state_dict`` immediately afterwards, so only shape and
+    naming matter here -- and :meth:`AdapterStack._load_from_state_dict` will
+    resize the stack anyway, so the count only has to be non-zero to be correct.
+    """
+    if int(arch.get("n_adapters", 0)) <= 0:
+        return None
+    stack = AdapterStack(
+        channels=int(arch["gnn_channels"]), rank=int(arch.get("adapter_rank", 16))
+    )
+    for _ in range(int(arch["n_adapters"])):
+        stack.add_adapter()
+    return stack
+
+
+def build_scoring_model(data, col_stats_dict, arch: Dict[str, Any], device):
+    r"""The model to load one checkpoint into.
+
+    Single construction site on purpose: scoring rebuilds only when the
+    architecture changes, so a checkpoint quietly loaded into the previous
+    checkpoint's model is the failure mode here, and it is silent.
+    """
+    return HeterogeneousSAGE(
+        data=data,
+        col_stats_dict=col_stats_dict,
+        gnn_channels=arch["gnn_channels"],
+        gnn_layers=arch["gnn_layers"],
+        gnn_aggr=arch["gnn_aggr"],
+        adapters=adapter_stack_for(arch),
+    ).to(device)
 
 
 def build_run_filter(
@@ -667,6 +716,10 @@ def generate_all_predictions_df(
         "gnn_aggr": gnn_aggr,
         "num_neighbors": num_neighbors,
         "batch_size": batch_size,
+        # A run that never logged these is a run from a mode that has no
+        # adapters, so an absent value means "bare backbone", not "unknown".
+        "n_adapters": 0,
+        "adapter_rank": 16,
     }
 
     mlflow_client = get_potato_client(mlflow_uri)
@@ -786,13 +839,7 @@ def generate_all_predictions_df(
 
         arch = _run_arch(run, defaults)
         if arch != current_arch:
-            model = HeterogeneousSAGE(
-                data=data,
-                col_stats_dict=col_stats_dict,
-                gnn_channels=arch["gnn_channels"],
-                gnn_layers=arch["gnn_layers"],
-                gnn_aggr=arch["gnn_aggr"],
-            ).to(device)
+            model = build_scoring_model(data, col_stats_dict, arch, device)
             full_loader = NeighborLoader(
                 data,
                 num_neighbors=[

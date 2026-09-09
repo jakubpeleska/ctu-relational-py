@@ -18,12 +18,17 @@ import torch
 from torch_geometric.data import HeteroData
 from torch_geometric.loader import NeighborLoader
 
+import experiments.continuous_learning.run_predictions as rp
 import scripts.compare_to_published as ctp
 from experiments.continuous_learning.run_predictions import (
+    ARCH_PARAMS,
     DEFAULT_SEED,
     MISSING,
     UNKNOWN_INCREMENT,
+    _run_arch,
+    adapter_stack_for,
     build_run_filter,
+    build_scoring_model,
     format_conflict_message,
     format_protocol_report,
     generate_all_predictions_df,
@@ -797,3 +802,133 @@ def test_a_missing_episode_1_is_inconclusive(monkeypatch, capsys):
     code = run_main(monkeypatch, published, candidate)
     assert code == 2
     assert "INCONCLUSIVE" in capsys.readouterr().out
+
+
+# --- regression: freeze_extend checkpoints carry adapters --------------------
+
+
+def test_arch_carries_the_adapter_geometry():
+    """n_adapters and adapter_rank are architecture, not training config.
+
+    A freeze_extend checkpoint from episode k holds k-1 adapter modules. If the
+    scoring pass rebuilds a bare backbone for it, load_state_dict raises
+    "Unexpected key(s) in state_dict: adapters.adapters.0.down.weight" and the
+    whole mode is lost from R.
+    """
+    assert "n_adapters" in ARCH_PARAMS
+    assert "adapter_rank" in ARCH_PARAMS
+
+
+def test_arch_defaults_to_no_adapters_for_modes_that_have_none():
+    run = pd.Series({"gnn_channels": 128, "gnn_layers": 2, "gnn_aggr": "sum",
+                     "num_neighbors": 128, "batch_size": 512})
+    defaults = {"gnn_channels": 128, "gnn_layers": 2, "gnn_aggr": "sum",
+                "num_neighbors": 128, "batch_size": 512,
+                "n_adapters": 0, "adapter_rank": 16}
+    arch = _run_arch(run, defaults)
+    assert arch["n_adapters"] == 0
+
+
+def test_arch_distinguishes_checkpoints_with_different_adapter_counts():
+    """Two episodes of one freeze_extend chain must not share a cached model.
+
+    The scoring loop rebuilds only when `arch != current_arch`, so if the
+    adapter count were absent from arch, episode 3's two-adapter checkpoint
+    would be loaded into episode 2's one-adapter model.
+    """
+    base = {"gnn_channels": 128, "gnn_layers": 2, "gnn_aggr": "sum",
+            "num_neighbors": 128, "batch_size": 512, "adapter_rank": 16}
+    defaults = dict(base, n_adapters=0)
+    one = _run_arch(pd.Series(dict(base, n_adapters=1)), defaults)
+    two = _run_arch(pd.Series(dict(base, n_adapters=2)), defaults)
+    assert one != two
+
+
+def test_a_parent_without_the_adapter_child_rejects_the_checkpoint():
+    """The exact production failure, and the exact fix.
+
+    AdapterStack._load_from_state_dict self-sizes, so a stack of the wrong
+    length loads fine. That is NOT what broke: run_predictions passed
+    ``adapters=None``, so the model had no adapters child for that hook to run
+    on, and the keys were unexpected at the parent -- "Unexpected key(s) in
+    state_dict: adapters.adapters.0.down.weight". Supplying any stack fixes it,
+    because the stack then grows to match on load.
+    """
+    from redelex.continual.adapters import AdapterStack
+
+    class Parent(torch.nn.Module):
+        def __init__(self, adapters=None):
+            super().__init__()
+            self.lin = torch.nn.Linear(4, 4)
+            self.adapters = adapters
+
+    saved = Parent(AdapterStack(channels=4, rank=2))
+    saved.adapters.add_adapter()
+    saved.adapters.add_adapter()
+    state = saved.state_dict()
+
+    # Before the fix: no adapters child at all.
+    bare = Parent(None)
+    with pytest.raises(RuntimeError, match="Unexpected key"):
+        bare.load_state_dict(state)
+
+    # After the fix: a stack is present, and sizes itself to the checkpoint.
+    fixed = Parent(AdapterStack(channels=4, rank=2))
+    fixed.load_state_dict(state)
+    assert fixed.adapters.n_adapters == 2
+
+
+def test_adapter_stack_is_none_for_modes_without_adapters():
+    assert adapter_stack_for({"n_adapters": 0, "gnn_channels": 8}) is None
+
+
+def test_adapter_stack_matches_the_logged_geometry():
+    stack = adapter_stack_for({"n_adapters": 3, "gnn_channels": 8, "adapter_rank": 4})
+    assert stack.n_adapters == 3
+
+
+def test_scoring_model_receives_the_adapter_stack(monkeypatch):
+    """The mutation guard: the stack must reach the model constructor.
+
+    Extracting build_scoring_model exists so this is checkable at all -- the
+    real construction sits inside generate_all_predictions_df, which needs
+    relbench data, MLflow and a GPU. Dropping `adapters=` from the constructor
+    call is exactly the bug that lost freeze_extend from R, and it must fail
+    here.
+    """
+    seen = {}
+
+    class Spy:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+        def to(self, _device):
+            return self
+
+    monkeypatch.setattr(rp, "HeterogeneousSAGE", Spy)
+    arch = {"gnn_channels": 8, "gnn_layers": 2, "gnn_aggr": "sum",
+            "n_adapters": 2, "adapter_rank": 4}
+    build_scoring_model(data=None, col_stats_dict=None, arch=arch, device="cpu")
+
+    assert "adapters" in seen, "the model was built without an adapters argument"
+    assert seen["adapters"] is not None
+    assert seen["adapters"].n_adapters == 2
+
+
+def test_scoring_model_passes_none_for_a_bare_backbone(monkeypatch):
+    seen = {}
+
+    class Spy:
+        def __init__(self, **kwargs):
+            seen.update(kwargs)
+
+        def to(self, _device):
+            return self
+
+    monkeypatch.setattr(rp, "HeterogeneousSAGE", Spy)
+    build_scoring_model(
+        data=None, col_stats_dict=None,
+        arch={"gnn_channels": 8, "gnn_layers": 2, "gnn_aggr": "sum", "n_adapters": 0},
+        device="cpu",
+    )
+    assert seen["adapters"] is None
