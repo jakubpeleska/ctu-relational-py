@@ -1472,23 +1472,46 @@ def _analyse_all(
                 )
             )
             continue
-        predictions = _ensure_time_axis(
-            pd.read_csv(csv_path), spec["time_col"], spec["splits"]
-        )
-        result = analyse_mode(
-            mode,
-            predictions,
-            spec,
-            dataset=args.dataset,
-            task=args.task,
-            sidecar=_load_sidecar(csv_path),
-            aggregate=args.aggregate,
-            decay=args.decay,
-            replicates=args.replicates,
-            require_protocol=args.require_protocol,
-            max_episodes=max_episodes,
-            predictions_csv=str(csv_path),
-        )
+        try:
+            predictions = _ensure_time_axis(
+                pd.read_csv(csv_path), spec["time_col"], spec["splits"]
+            )
+            result = analyse_mode(
+                mode,
+                predictions,
+                spec,
+                dataset=args.dataset,
+                task=args.task,
+                sidecar=_load_sidecar(csv_path),
+                aggregate=args.aggregate,
+                decay=args.decay,
+                replicates=args.replicates,
+                require_protocol=args.require_protocol,
+                max_episodes=max_episodes,
+                predictions_csv=str(csv_path),
+            )
+        except Exception as exc:  # noqa: BLE001 -- see below
+            # One unreadable CSV must not cost the other modes. A chain that was
+            # killed mid-write (preemption, OOM, a full filesystem) leaves a
+            # truncated file, and parsing it raises anywhere from pd.read_csv to
+            # the metric code. Letting that propagate loses a whole batch of
+            # modes -- 8 chains of GPU time -- to one bad file, and the analysis
+            # is per-mode by construction, so the honest response is to exclude
+            # this mode with its reason and keep going. The exclusion is
+            # reported in the table exactly like a missing CSV, so a mode that
+            # vanished this way can never be mistaken for one that was analysed.
+            results.append(
+                ModeResult(
+                    mode, False,
+                    f"could not analyse {csv_path}: {type(exc).__name__}: {exc}",
+                    predictions_csv=str(csv_path),
+                )
+            )
+            print(
+                f"WARNING: excluding {mode}; {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            continue
         results.append(result)
         if result.included and not result.protocol_verified:
             print(
@@ -1500,7 +1523,17 @@ def _analyse_all(
         if result.included and not drift:
             # Once per (dataset, task): the target statistics are a property of
             # the data, so any included mode's CSV gives the same answer.
-            drift = drift_rows(predictions, spec, args.dataset, args.task)
+            try:
+                drift = drift_rows(predictions, spec, args.dataset, args.task)
+            except Exception as exc:  # noqa: BLE001
+                # The drift curve is a side panel, not the result. Losing it must
+                # not cost the mode table it sits next to; the next included mode
+                # gets a turn at computing it.
+                print(
+                    f"WARNING: drift curve failed on {mode}; "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
     return results, drift
 
 

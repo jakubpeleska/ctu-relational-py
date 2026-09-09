@@ -826,6 +826,51 @@ def test_main_excludes_a_missing_mode_and_says_so(grid, capsys):
     assert set(read_results(grid)["mode"]) == set(MODE_PREDICTIONS) | {DRIFT_MODE}
 
 
+def test_main_excludes_an_unparseable_csv_and_keeps_the_other_modes(grid, capsys):
+    """One corrupt CSV must cost one mode, not the whole batch.
+
+    A chain killed mid-write (preemption, OOM, a full filesystem) leaves a file
+    whose rows disagree on field count, and ``pd.read_csv`` raises on it. Before
+    the driver caught that, the exception escaped ``_analyse_all`` and took the
+    other seven modes down with it -- eight chains of GPU time lost to one bad
+    file.
+    """
+    corrupt = Path(grid) / "data" / experiment_name(PREFIX, "naive")
+    csv_path = corrupt / f"{DATASET}_{TASK}_predictions.csv"
+    csv_path.write_text("time,y,pred_1_a\n0,1.0,1.0\n0,1.0,1.0,9.9,9.9\n")
+
+    code = ra.main(cli(grid))
+
+    # Excluded, not fatal: the run still reports rather than crashing.
+    assert code == 1
+    errors = capsys.readouterr().err
+    assert "naive" in errors
+
+    # The point of the fix: every other mode still made it into the table.
+    survivors = set(read_results(grid)["mode"])
+    assert "naive" not in survivors
+    assert survivors == (set(MODE_PREDICTIONS) - {"naive"}) | {DRIFT_MODE}
+
+
+def test_main_still_reports_drift_when_the_first_mode_is_corrupt(grid, capsys):
+    """The drift curve is computed from whichever mode survives.
+
+    ``drift_rows`` runs once per (dataset, task) off the first *included* mode.
+    If that slot were claimed by a mode that then failed to parse, the curve
+    would silently vanish from a run whose table is otherwise complete.
+    """
+    first = order_modes(list(MODE_PREDICTIONS))[0]
+    csv_path = (
+        Path(grid) / "data" / experiment_name(PREFIX, first)
+        / f"{DATASET}_{TASK}_predictions.csv"
+    )
+    csv_path.write_text("time,y,pred_1_a\n0,1.0,1.0\n0,1.0,1.0,9.9,9.9\n")
+
+    assert ra.main(cli(grid)) == 1
+    capsys.readouterr()
+    assert DRIFT_MODE in set(read_results(grid)["mode"])
+
+
 def test_main_refuses_when_modes_used_different_protocols(grid, capsys):
     path = Path(grid) / "data" / experiment_name(PREFIX, "naive")
     sidecar = path / f"{DATASET}_{TASK}_predictions.seeds.json"
