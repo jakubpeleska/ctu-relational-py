@@ -2,10 +2,21 @@
 #SBATCH --job-name=cl_chunk
 #SBATCH --partition=amdgpufast
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --cpus-per-task=4
+#SBATCH --mem=32G
 #SBATCH --time=4:00:00
 #SBATCH --output=logs/rci/run_chain_%j.log
+#
+# Resource sizing is deliberate, and smaller than it looks like it should be.
+# amdgpufast bills TRESBillingWeights=CPU=1.0,Mem=0.25G -- there is NO gres/gpu
+# term, so fair-share is charged entirely for CPU and RAM. At 8 CPU + 64G that
+# was billing=24 per job for a measured footprint of ~1.03 cores (AveCPU/Elapsed
+# over a 2:40 chunk) and 4.3G RSS; across 71 finished chunks the peak was 17.6G,
+# on the one-off dataset materialization step. 4 CPU + 32G is billing=12.
+#
+# Cutting CPUs costs no parallelism: each Ray trial takes the whole GPU, so with
+# --gres=gpu:1 exactly one trial runs at a time no matter how many CPUs are free.
+# CPUS_PER_TRIAL=4 still yields floor(4/4)=1 concurrent trial, same as before.
 #
 # One CHUNK of one continual-learning chain on RCI.
 #

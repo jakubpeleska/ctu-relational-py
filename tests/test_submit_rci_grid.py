@@ -341,10 +341,31 @@ def test_every_chunk_is_assigned_exactly_once(cfg):
 
 
 def test_lanes_are_load_balanced(cfg):
+    """The packer must reach the best balance the input actually allows.
+
+    A fixed max/min ratio is the wrong bar. Chunks of one chain are
+    sequentially dependent -- each resumes the previous chunk's checkpoint --
+    so a chain cannot be spread across lanes: it is one indivisible item. Once
+    the measured cost of ewc made a single chain (25.2 GPU-h on rel-stack)
+    larger than the ideal per-lane share (68.1 / 4 = 17.0), NO assignment can
+    hit 1.5x, and a test demanding it would only be satisfied by pretending
+    ewc is cheap again.
+
+    So assert the real property: no lane exceeds the theoretical optimum, which
+    is the greater of the ideal share and the largest indivisible chain.
+    """
     chains = build_matrix([("rel-stack", "user-badge")], MODE_ORDER, cfg)
-    loads = [sum(c.gpu_hours for c in chunks)
-             for chunks in assign_lanes(chains, [0, 1, 2, 3]).values()]
-    assert max(loads) <= 1.5 * min(loads)
+    lanes = assign_lanes(chains, [0, 1, 2, 3])
+    loads = [sum(c.gpu_hours for c in chunks) for chunks in lanes.values()]
+
+    chain_costs = [sum(c.gpu_hours for c in chain) for chain in chains]
+    optimum = max(sum(chain_costs) / len(lanes), max(chain_costs))
+    assert max(loads) <= optimum * 1.05, (
+        f"loads {loads} exceed the achievable optimum {optimum:.1f}"
+    )
+    # And the packer must still be doing real work: no lane left empty while
+    # another carries more than one chain's worth.
+    assert min(loads) > 0
 
 
 # ---------------------------------------------------------------------------
@@ -489,7 +510,15 @@ def test_dry_run_prints_the_cost_and_the_commands(capsys):
     assert main(["--pairs", "rel-f1:driver-dnf", "--dry-run"]) == 0
     out = capsys.readouterr().out
     assert "GPU-h" in out and "TOTAL" in out
-    assert out.count("sbatch --parsable") == len(MODE_ORDER)
+    # One sbatch per CHUNK, not per mode: an expensive mode is split so that no
+    # single job can exceed the partition wall. ewc on an 11-episode task is two
+    # chunks, so this is 9 for 8 modes -- and the count must track the plan
+    # rather than the roster, or the test silently passes when chunking breaks.
+    expected_chunks = sum(
+        len(chain) for chain in build_matrix([("rel-f1", "driver-dnf")], MODE_ORDER, Config())
+    )
+    assert expected_chunks > len(MODE_ORDER), "chunking should split at least one mode"
+    assert out.count("sbatch --parsable") == expected_chunks
     assert "run_chain.sh" in out
 
 

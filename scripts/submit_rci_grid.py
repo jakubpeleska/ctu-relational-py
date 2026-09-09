@@ -99,8 +99,18 @@ EPISODES: Dict[Tuple[str, str], int] = {
 # over *all* of that dataset's tasks. Divided by (modes x seeds x episodes) it
 # gives the cost of one episode of one trial, which is the unit everything here
 # is planned in.
+# rel-f1 is MEASURED: the eight driver-position chains totalled 16.57 h over 11
+# episodes, which scales to 36.15 h across the dataset's 24 episodes, or 31.6 h
+# expressed per MEASURED_MODES=7. With the mode factors below, that reproduces
+# every one of the eight measured chains to within 4%.
+#
+# The other five are still the ORIGINAL ESTIMATES, produced by the same method
+# that proved 58% optimistic on rel-f1 (it said 20.0 h). Treat them as lower
+# bounds and re-measure each from its first completed chains -- an optimistic
+# aggregate here shows up as a chunk that TIMEOUTs at 90% and needs a manual
+# resume, which is exactly how the ewc chains were lost.
 DATASET_GPU_HOURS: Dict[str, float] = {
-    "rel-f1": 20.0,
+    "rel-f1": 31.6,       # measured, 2026-09-07
     "rel-trial": 41.0,
     "rel-stack": 186.0,
     "rel-hm": 389.0,
@@ -127,15 +137,37 @@ MODE_ORDER: Tuple[str, ...] = (
 # backward through it (freeze_extend), or a full-history sampler (from_scratch,
 # joint). The mean over the roster is held near 1.0 so a full-roster estimate
 # stays anchored to the measured total (times 8/7 for the extra mode).
+# Measured on rel-f1:driver-position -- eight chains, same dataset, same task,
+# same 11 episodes, so the ratios are directly comparable. Anchored on
+# from_scratch=1.15 (1:40:57 elapsed => 1.463 h per unit factor).
+#
+# The first guesses here were badly wrong in the direction that costs jobs: ewc
+# was modelled at 1.00 and measured at 3.08, so an 11-episode ewc chain needs
+# 4.50 h against the 4 h wall and TIMEOUTs one episode from the end. lwf (1.51x)
+# and naive (1.50x) were under-modelled too. Chunk sizing divides the wall budget
+# by these numbers, so optimism here does not show up as a bad estimate -- it
+# shows up as a chain that dies at 90% and has to be resumed by hand.
+#
+# Rounded UP deliberately: an overestimate only makes chunks smaller, while an
+# underestimate loses the whole chunk. The values below are those measured
+# ratios divided by their own mean, because these factors only *redistribute*
+# a dataset's measured aggregate between modes -- their mean must stay 1.0 or
+# DATASET_GPU_HOURS stops being the anchor. The absolute level lives there.
+#
+# ewc pays a diagonal-Fisher pass over the episode's data after every episode,
+# and lwf a teacher forward pass -- both per-episode costs on top of training.
+# That naive (increment only) matches joint (full history) says per-episode cost
+# is dominated by fixed overhead -- validation, materialisation, prediction --
+# rather than by training-set size.
 MODE_COST_FACTOR: Dict[str, float] = {
-    "from_scratch": 1.15,
-    "joint": 1.20,
-    "naive": 0.80,
-    "er": 1.05,
-    "der_pp": 1.10,
-    "ewc": 1.00,
-    "lwf": 1.05,
-    "freeze_extend": 0.75,
+    "from_scratch": 0.800,  # measured 0.80 of the mode mean
+    "joint": 0.835,         # measured 0.83 of the mode mean
+    "naive": 0.835,         # measured 0.83 of the mode mean
+    "er": 0.835,            # measured 0.83 of the mode mean
+    "der_pp": 0.835,        # measured 0.83 of the mode mean
+    "ewc": 2.157,           # measured 2.16 of the mode mean
+    "lwf": 1.113,           # measured 1.11 of the mode mean
+    "freeze_extend": 0.591, # measured 0.59 of the mode mean
 }
 
 
@@ -259,8 +291,8 @@ class Config:
     time_fill: float = 0.75
     startup_hours: float = 0.25
     device_factor: float = 1.0
-    cpus: int = 8
-    mem: str = "64G"
+    cpus: int = 4
+    mem: str = "32G"
     cpus_per_trial: int = 4
     num_samples: int = 5
     seed: int = 42
@@ -586,10 +618,23 @@ def assign_lanes(chains: Sequence[Sequence[Chunk]],
                  lanes: Sequence[int]) -> Dict[int, List[Chunk]]:
     r"""Deal whole chains into lanes, keeping each chain serial and in order.
 
-    Greedy least-loaded by estimated GPU-hours, walking the chains in priority
-    order. Every chunk of a chain lands in one lane, in index order, so a lane
-    is a strictly serial dependency chain and no chain ever has two jobs in
-    flight.
+    Greedy least-loaded by estimated GPU-hours, considering the chains
+    **largest-first** (LPT). Every chunk of a chain lands in one lane, in index
+    order, so a lane is a strictly serial dependency chain and no chain ever has
+    two jobs in flight.
+
+    Largest-first matters, and walking in priority order instead was a real bug.
+    A chain is indivisible across lanes -- its chunks resume one another -- so
+    this is bin-packing, where greedy-in-arbitrary-order has no useful bound but
+    greedy-largest-first is within 4/3 of optimal. On rel-stack the priority walk
+    placed the cheap from_scratch chain first and then dropped the 18.4 h ewc
+    chain on the same lane, for a 25.2 h lane beside three 14.2 h lanes: an
+    11-hour tail on one GPU that no dependency required.
+
+    Assignment order and submission order are separate concerns, so the priority
+    order is restored *within* each lane afterwards: lanes balance by size, while
+    each lane still starts with its cheapest reference modes, which is what makes
+    partial results useful early.
 
     Args:
         lanes: Lane ids to fill. At most `MAX_CONCURRENT_GPUS` of them.
@@ -607,14 +652,25 @@ def assign_lanes(chains: Sequence[Sequence[Chunk]],
             f"{len(set(lanes))} lanes would run {len(set(lanes))} GPUs at once; "
             f"the cap is {MAX_CONCURRENT_GPUS}"
         )
-    plan: Dict[int, List[Chunk]] = {lane: [] for lane in lanes}
+    indexed = [(i, chain) for i, chain in enumerate(chains) if chain]
     load: Dict[int, float] = {lane: 0.0 for lane in lanes}
-    for chain in chains:
-        if not chain:
-            continue
-        lane = min(lanes, key=lambda i: (load[i], i))
-        plan[lane].extend(chain)
+    assigned: Dict[int, List[Tuple[int, Sequence[Chunk]]]] = {lane: [] for lane in lanes}
+
+    # LPT: heaviest chain first, each onto the lane that is currently lightest.
+    # Ties break on the original index so the assignment stays deterministic.
+    for i, chain in sorted(
+        indexed, key=lambda pair: (-sum(c.gpu_hours for c in pair[1]), pair[0])
+    ):
+        lane = min(lanes, key=lambda k: (load[k], k))
+        assigned[lane].append((i, chain))
         load[lane] += sum(c.gpu_hours for c in chain)
+
+    # Restore priority order inside each lane -- balance is about which lane,
+    # not about what that lane runs first.
+    plan: Dict[int, List[Chunk]] = {lane: [] for lane in lanes}
+    for lane, entries in assigned.items():
+        for _, chain in sorted(entries, key=lambda pair: pair[0]):
+            plan[lane].extend(chain)
     return plan
 
 
@@ -812,8 +868,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
                    help="Seeds per episode. Must not change mid-chain: it is the "
                         "resume quorum (run_chain.sh refuses if it does).")
     p.add_argument("--seed", type=int, default=42)
-    p.add_argument("--cpus", type=int, default=8, help="CPUs per job.")
-    p.add_argument("--mem", default="64G", help="Memory per job.")
+    p.add_argument("--cpus", type=int, default=4, help="CPUs per job.")
+    p.add_argument("--mem", default="32G", help="Memory per job.")
     p.add_argument("--cpus-per-trial", type=int, default=4)
     p.add_argument("--repo", default=DEFAULT_REPO, help="Repo path on RCI.")
     p.add_argument("--out", default=None, help="Root for logs, models and markers. "
